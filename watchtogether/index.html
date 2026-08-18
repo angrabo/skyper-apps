@@ -19,97 +19,308 @@
      * This page embeds the real YouTube IFrame player — which is the whole reason activities moved
      * to a separate real origin: the player needs its own storage and network, and gets both here
      * without ever sharing Skyper's origin.
+     *
+     * Volume and fullscreen are local-only controls (never touch shared `state`), so a follower can
+     * always use them — the shield only ever has to stop a follower forking the shared transport,
+     * never stop them adjusting their own ears. An ad is detected by comparing the player's live
+     * `video_id` against the queue entry it should be playing: while they differ, an ad is loaded
+     * instead of the content, so the shield drops (their skip button is theirs to click) and the
+     * host stops broadcasting/following against a position that belongs to nobody's shared timeline.
      */
     :root {
-        --bg: #14161b;
-        --panel: #1d2026;
-        --line: #2c3038;
-        --text: #e7e9ee;
-        --muted: #9aa1ad;
-        --accent: #7aa2ff;
+        --bg: #0f0f0f;
+        --panel: #181818;
+        --panel-raised: #212121;
+        --line: #303030;
+        --text: #f1f1f1;
+        --muted: #aaaaaa;
+        --accent: #ff0033;
+        --accent-quiet: #3ea6ff;
+        --radius: 12px;
     }
 
     * { box-sizing: border-box; }
 
-    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
-        font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+    html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 "Roboto", system-ui, "Segoe UI", sans-serif;
+    }
 
-    body { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+    body { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
 
-    .stage { flex: 1; min-height: 0; position: relative; background: #000; border-radius: 10px; overflow: hidden; }
+    button { font: inherit; }
+
+    /* ─── Stage ────────────────────────────────────────────────────────────── */
+
+    .stage { flex: 1; min-height: 0; position: relative; background: #000; border-radius: var(--radius); overflow: hidden; }
     .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 
     .empty {
         position: absolute; inset: 0;
-        display: grid; place-items: center;
+        display: grid; place-items: center; gap: 10px;
         color: var(--muted); text-align: center; padding: 16px;
     }
+    .empty svg { opacity: .5; }
 
     /* An explicit `display` beats the UA's `[hidden] { display: none }`, so without this the
-       paste-a-link notice sits over the video forever. Same guard for the shield. */
-    .empty[hidden], .shield[hidden] { display: none; }
+       paste-a-link notice or the shield would sit over the video forever. */
+    .empty[hidden], .shield[hidden], .adBadge[hidden], .modal[hidden] { display: none; }
 
     /* Followers watch; the host drives. A transparent shield over a follower's player is what
-       keeps YouTube's own controls host-only without hacking the player itself. The shield leaves
-       the bottom strip uncovered so captions/settings stay reachable? No — all of it: a paused
-       follower clicking play would silently fork the room. */
-    .shield { position: absolute; inset: 0; }
+       keeps YouTube's own controls host-only without hacking the player itself — but it drops the
+       instant an ad is detected, since an ad belongs to the viewer watching it, not the room. */
+    .shield { position: absolute; inset: 0; cursor: default; }
 
-    .bar { display: flex; gap: 8px; }
-
-    .bar input {
-        flex: 1;
-        padding: 8px 10px;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 8px;
+    .adBadge {
+        position: absolute; top: 10px; left: 10px;
+        background: rgba(0, 0, 0, .75);
         color: var(--text);
-        font: inherit;
+        font-size: 11px;
+        letter-spacing: .04em;
+        padding: 4px 8px;
+        border-radius: 4px;
+        pointer-events: none;
     }
-    .bar input::placeholder { color: var(--muted); }
 
-    .bar button {
-        padding: 8px 14px;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 8px;
+    /* ─── Now-playing / control row ───────────────────────────────────────── */
+
+    .now {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 2px 2px 0;
+    }
+
+    .now .title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 15px;
+        font-weight: 500;
+    }
+    .now .sub { color: var(--muted); font-size: 12px; }
+
+    .controls { display: flex; align-items: center; gap: 6px; padding: 4px 2px; }
+
+    .iconBtn {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        background: transparent;
+        border: 0;
+        border-radius: 50%;
         color: var(--text);
-        font: inherit;
+        cursor: pointer;
+    }
+    .iconBtn:hover { background: rgba(255, 255, 255, .1); }
+    .iconBtn svg { width: 20px; height: 20px; }
+
+    .volume { display: flex; align-items: center; gap: 4px; }
+    .volume input[type="range"] {
+        width: 80px;
+        accent-color: var(--text);
         cursor: pointer;
     }
 
-    .queue { max-height: 30%; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+    .spacer { flex: 1; }
 
-    .item {
-        display: flex; align-items: center; gap: 8px;
-        padding: 6px 8px;
+    .pill {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 14px;
+        background: var(--panel-raised);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--text);
+        cursor: pointer;
+    }
+    .pill:hover { background: #2a2a2a; }
+    .pill svg { width: 16px; height: 16px; }
+    .pill .count {
+        background: var(--accent);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        min-width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        padding: 0 4px;
+    }
+
+    .note { color: var(--muted); text-align: center; margin: 0; font-size: 12px; }
+
+    /* ─── Queue modal ─────────────────────────────────────────────────────── */
+
+    .modal {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, .6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+        padding: 20px;
+    }
+
+    .sheet {
+        width: min(480px, 100%);
+        max-height: min(640px, 100%);
         background: var(--panel);
         border: 1px solid var(--line);
+        border-radius: var(--radius);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .sheetHead {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+    }
+    .sheetHead h2 { font-size: 15px; margin: 0; flex: 1; }
+
+    .addForm { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+
+    .addForm input {
+        flex: 1;
+        min-width: 0;
+        padding: 9px 12px;
+        background: var(--panel-raised);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--text);
+        font: inherit;
+    }
+    .addForm input::placeholder { color: var(--muted); }
+
+    .addForm button {
+        padding: 9px 16px;
+        background: var(--accent-quiet);
+        border: 0;
+        border-radius: 999px;
+        color: #0f0f0f;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .addForm button:hover { filter: brightness(1.08); }
+
+    .queue { overflow-y: auto; display: flex; flex-direction: column; padding: 6px; gap: 2px; }
+
+    .item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px;
         border-radius: 8px;
         color: var(--muted);
     }
-    .item[data-current] { border-color: var(--accent); color: var(--text); }
-    .item .video { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .item button { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; }
-    .item button:hover { color: var(--text); }
+    .item:hover { background: var(--panel-raised); }
+    .item[data-current] { background: rgba(62, 166, 255, .12); color: var(--text); }
 
-    .note { color: var(--muted); text-align: center; margin: 0; }
+    .item .thumb {
+        width: 96px;
+        height: 54px;
+        flex-shrink: 0;
+        border-radius: 6px;
+        background: #000 center/cover no-repeat;
+        position: relative;
+        overflow: hidden;
+    }
+    .item[data-current] .thumb::after {
+        content: "▶ playing";
+        position: absolute;
+        inset: auto 0 0 0;
+        font-size: 9px;
+        letter-spacing: .04em;
+        text-align: center;
+        padding: 2px 0;
+        background: rgba(0, 0, 0, .7);
+        color: var(--accent-quiet);
+    }
+
+    .item .meta { flex: 1; min-width: 0; }
+    .item .video {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 500;
+    }
+    .item .by { font-size: 11px; color: var(--muted); }
+
+    .item .actions { display: flex; gap: 2px; }
+    .item button.iconBtn { width: 28px; height: 28px; }
+    .item button.iconBtn svg { width: 15px; height: 15px; }
+
+    .queueEmpty { padding: 30px 16px; text-align: center; color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
     <div class="stage">
         <div id="player"></div>
-        <div class="empty" id="empty">Paste a YouTube link below to start watching together.</div>
+        <div class="empty" id="empty">
+            <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+                <rect x="2" y="5" width="20" height="14" rx="3"></rect>
+                <path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"></path>
+            </svg>
+            <span>Paste a YouTube link to start watching together.</span>
+        </div>
         <div class="shield" id="shield" hidden></div>
+        <div class="adBadge" id="adBadge" hidden>Ad — yours to skip</div>
     </div>
 
-    <form class="bar" id="addForm">
-        <input id="addInput" placeholder="https://youtube.com/watch?v=… or youtu.be/…" autocomplete="off">
-        <button type="submit">Add to queue</button>
-    </form>
+    <div class="now">
+        <span class="title" id="nowTitle">Nothing queued yet</span>
+        <span class="sub" id="nowSub"></span>
+    </div>
 
-    <div class="queue" id="queue"></div>
-    <p class="note" id="note"></p>
+    <div class="controls">
+        <div class="volume">
+            <button class="iconBtn" id="muteBtn" title="Mute"></button>
+            <input type="range" id="volumeRange" min="0" max="100" value="100">
+        </div>
+        <button class="iconBtn" id="fullscreenBtn" title="Fullscreen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+        </button>
+        <div class="spacer"></div>
+        <p class="note" id="note"></p>
+        <div class="spacer"></div>
+        <button class="pill" id="queueBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+            <span>Queue</span>
+            <span class="count" id="queueCount">0</span>
+        </button>
+    </div>
+
+    <div class="modal" id="modal" hidden>
+        <div class="sheet">
+            <div class="sheetHead">
+                <h2>Queue</h2>
+                <button class="iconBtn" id="closeModal" title="Close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <form class="addForm" id="addForm">
+                <input id="addInput" placeholder="https://youtube.com/watch?v=… or youtu.be/…" autocomplete="off">
+                <button type="submit">Add</button>
+            </form>
+            <div class="queue" id="queue"></div>
+        </div>
+    </div>
 
 <script src="../sdk/skyper-activity.js"></script>
 <script>
@@ -139,6 +350,10 @@
     // must not be re-broadcast as if the host touched the controls.
     let applying = false;
 
+    // Local-only: whichever video is currently loaded is an ad rather than the queued content.
+    // Ads are per-viewer — YouTube hands each embed its own — so they are never part of `state`.
+    let adPlaying = false;
+
     const tag = document.createElement('script');
     tag.src = 'https://www.youtube.com/iframe_api';
     document.head.appendChild(tag);
@@ -149,10 +364,14 @@
             events: {
                 onReady: () => {
                     playerReady = true;
+                    player.setVolume(savedVolume());
+                    if (savedVolume() === 0) player.mute();
                     if (pendingLoad) { loadCurrent(pendingLoad.position, pendingLoad.playing); pendingLoad = null; }
+                    render();
                 },
                 onStateChange: (event) => {
-                    if (!isHost() || applying) return;
+                    updateAdState();
+                    if (!isHost() || applying || adPlaying) return;
 
                     // The host touching their own controls IS the transport. Everyone else hears
                     // about it as a relay message.
@@ -169,6 +388,16 @@
 
     function currentVideo() {
         return state.index >= 0 ? state.queue[state.index] ?? null : null;
+    }
+
+    /** An ad is loaded when the player's live video differs from the content the queue says
+     * should be playing — the one signal the IFrame API exposes for "this isn't the content". */
+    function updateAdState() {
+        const video = currentVideo();
+        const data = playerReady && player.getVideoData ? player.getVideoData() : null;
+        const next = Boolean(video && data && data.video_id && data.video_id !== video.videoId);
+
+        if (next !== adPlaying) { adPlaying = next; render(); }
     }
 
     function loadCurrent(position, playing) {
@@ -195,6 +424,7 @@
                 if (!videoId) return;
 
                 state.queue.push({ videoId, addedBy: senderId });
+                fetchMeta(videoId);
 
                 // The first addition starts playback for the room — nobody wants to add a video
                 // and then hunt for a play button that only the host can see.
@@ -246,9 +476,11 @@
     }
 
     /** A follower bringing its player to the host's reported position. Snap only past the
-     * tolerance: constant micro-seeks stutter, and a second and a half is invisible in a video. */
+     * tolerance: constant micro-seeks stutter, and a second and a half is invisible in a video.
+     * Skipped entirely while this viewer's own ad is up front — the host's position describes the
+     * content, and this player is not showing the content right now. */
     function follow() {
-        if (!playerReady || !currentVideo()) return;
+        if (!playerReady || !currentVideo() || adPlaying) return;
 
         applying = true;
 
@@ -264,7 +496,7 @@
         apply(senderId, action);
 
         if (isHost()) {
-            if (playerReady && currentVideo()) state.position = player.getCurrentTime();
+            if (playerReady && currentVideo() && !adPlaying) state.position = player.getCurrentTime();
             skyper.setState(state);
         }
 
@@ -273,8 +505,10 @@
 
     // The host's heartbeat: drift correction for followers, and a fresh snapshot for whoever
     // joins next. A new host (succession) starts ticking the moment the session event lands.
+    // Skipped while the host's own ad is up — its position and playing-state belong to the ad,
+    // and broadcasting either would drag every follower into the host's ad break.
     setInterval(() => {
-        if (!isHost() || !playerReady || !currentVideo()) return;
+        if (!isHost() || !playerReady || !currentVideo() || adPlaying) return;
 
         state.position = player.getCurrentTime();
         state.playing = player.getPlayerState() === YT.PlayerState.PLAYING;
@@ -283,16 +517,98 @@
         skyper.setState(state);
     }, SYNC_EVERY_MS);
 
+    // Ads have no state-change event of their own worth trusting, so this is polled rather than
+    // driven off onStateChange alone — a skip button click, for instance, never fires it.
+    setInterval(updateAdState, 500);
+
     skyper.on('session', render);
+
+    // ─── Local-only controls: volume, mute, fullscreen ────────────────────────
+    // Never touch `state` — every viewer's ears (and ad-skip clicks) are their own.
+
+    function savedVolume() {
+        const raw = Number(localStorage.getItem('wt-volume'));
+        return Number.isFinite(raw) && raw >= 0 && raw <= 100 ? raw : 100;
+    }
+
+    const volumeRange = document.getElementById('volumeRange');
+    const muteBtn = document.getElementById('muteBtn');
+
+    volumeRange.value = savedVolume();
+
+    volumeRange.addEventListener('input', () => {
+        const value = Number(volumeRange.value);
+        localStorage.setItem('wt-volume', String(value));
+        if (!playerReady) return;
+        player.setVolume(value);
+        if (value === 0) player.mute(); else player.unMute();
+        renderVolumeIcon();
+    });
+
+    muteBtn.addEventListener('click', () => {
+        if (!playerReady) return;
+        if (player.isMuted() || player.getVolume() === 0) {
+            player.unMute();
+            const restored = volumeRange.value > 0 ? Number(volumeRange.value) : 50;
+            player.setVolume(restored);
+            volumeRange.value = restored;
+        } else {
+            player.mute();
+        }
+        renderVolumeIcon();
+    });
+
+    function renderVolumeIcon() {
+        const muted = playerReady && (player.isMuted() || player.getVolume() === 0);
+        muteBtn.innerHTML = muted
+            ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M23 9l-6 6M17 9l6 6"></path></svg>'
+            : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H2v6h4l5 4V5z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"></path></svg>';
+    }
+
+    document.getElementById('fullscreenBtn').addEventListener('click', () => {
+        const iframe = document.querySelector('.stage iframe');
+        if (iframe && iframe.requestFullscreen) iframe.requestFullscreen();
+    });
+
+    renderVolumeIcon();
+
+    // ─── Queue metadata (title / channel / thumbnail) ──────────────────────────
+    // Cosmetic only, fetched straight from YouTube's public oEmbed endpoint — no scraping, and
+    // nothing here is shared state, so a failed fetch just leaves that one row plain.
+
+    const metaCache = {};
+
+    function fetchMeta(videoId) {
+        if (metaCache[videoId]) return;
+        metaCache[videoId] = { title: null, author: null };
+
+        fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent('https://www.youtube.com/watch?v=' + videoId)}`)
+            .then((response) => (response.ok ? response.json() : null))
+            .then((data) => {
+                if (!data) return;
+                metaCache[videoId] = { title: data.title || null, author: data.author_name || null };
+                render();
+            })
+            .catch(() => {});
+    }
 
     // ─── UI ──────────────────────────────────────────────────────────────────
 
     const emptyEl = document.getElementById('empty');
     const shieldEl = document.getElementById('shield');
+    const adBadgeEl = document.getElementById('adBadge');
+    const nowTitleEl = document.getElementById('nowTitle');
+    const nowSubEl = document.getElementById('nowSub');
     const queueEl = document.getElementById('queue');
+    const queueCountEl = document.getElementById('queueCount');
     const noteEl = document.getElementById('note');
+    const modalEl = document.getElementById('modal');
     const formEl = document.getElementById('addForm');
     const inputEl = document.getElementById('addInput');
+
+    document.getElementById('queueBtn').addEventListener('click', () => { modalEl.hidden = false; inputEl.focus(); });
+    document.getElementById('closeModal').addEventListener('click', () => { modalEl.hidden = true; });
+    modalEl.addEventListener('click', (event) => { if (event.target === modalEl) modalEl.hidden = true; });
 
     formEl.addEventListener('submit', (event) => {
         event.preventDefault();
@@ -323,45 +639,97 @@
         return person ? person.name : 'someone';
     }
 
+    function labelOf(entry) {
+        const meta = metaCache[entry.videoId];
+        return meta && meta.title ? meta.title : entry.videoId;
+    }
+
     function render() {
-        emptyEl.hidden = Boolean(currentVideo());
-        shieldEl.hidden = isHost();
+        const video = currentVideo();
+
+        emptyEl.hidden = Boolean(video);
+        shieldEl.hidden = isHost() || adPlaying;
+        adBadgeEl.hidden = !adPlaying;
+
+        if (video) {
+            const meta = metaCache[video.videoId];
+            nowTitleEl.textContent = meta && meta.title ? meta.title : 'Loading title…';
+            nowSubEl.textContent = meta && meta.author ? meta.author : '';
+        } else {
+            nowTitleEl.textContent = 'Nothing queued yet';
+            nowSubEl.textContent = '';
+        }
 
         noteEl.textContent = isHost()
-            ? 'You are the host — your player controls everyone’s playback.'
+            ? 'You control playback for the room.'
             : `${nameOf(skyper.instance.hostId)} controls playback.`;
 
-        queueEl.replaceChildren(...state.queue.map((entry, index) => {
-            const row = document.createElement('div');
-            row.className = 'item';
-            if (index === state.index) row.dataset.current = '';
+        queueCountEl.textContent = String(state.queue.length);
 
-            const video = Object.assign(document.createElement('span'), {
-                className: 'video',
-                textContent: `${entry.videoId} — added by ${nameOf(entry.addedBy)}`
-            });
-            row.appendChild(video);
+        if (state.queue.length === 0) {
+            queueEl.innerHTML = '';
+            const empty = document.createElement('div');
+            empty.className = 'queueEmpty';
+            empty.textContent = 'The queue is empty — paste a link above.';
+            queueEl.appendChild(empty);
+        } else {
+            queueEl.replaceChildren(...state.queue.map((entry, index) => {
+                fetchMeta(entry.videoId);
 
-            if (isHost() && index !== state.index) {
-                const play = Object.assign(document.createElement('button'), { textContent: '▶', title: 'Play this' });
-                play.addEventListener('click', () => skyper.send({ t: 'jump', index }));
-                row.appendChild(play);
-            }
+                const row = document.createElement('div');
+                row.className = 'item';
+                if (index === state.index) row.dataset.current = '';
 
-            if (index !== state.index && (isHost() || entry.addedBy === skyper.instance.viewerId)) {
-                const remove = Object.assign(document.createElement('button'), { textContent: '✕', title: 'Remove' });
-                remove.addEventListener('click', () => skyper.send({ t: 'remove', index }));
-                row.appendChild(remove);
-            }
+                const thumb = document.createElement('div');
+                thumb.className = 'thumb';
+                thumb.style.backgroundImage = `url(https://i.ytimg.com/vi/${entry.videoId}/mqdefault.jpg)`;
+                row.appendChild(thumb);
 
-            return row;
-        }));
+                const meta = document.createElement('div');
+                meta.className = 'meta';
+                meta.innerHTML =
+                    `<span class="video">${escapeHtml(labelOf(entry))}</span>` +
+                    `<span class="by">added by ${escapeHtml(nameOf(entry.addedBy))}</span>`;
+                row.appendChild(meta);
+
+                const actions = document.createElement('div');
+                actions.className = 'actions';
+
+                if (isHost() && index !== state.index) {
+                    const play = document.createElement('button');
+                    play.className = 'iconBtn';
+                    play.title = 'Play this';
+                    play.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg>';
+                    play.addEventListener('click', () => skyper.send({ t: 'jump', index }));
+                    actions.appendChild(play);
+                }
+
+                if (index !== state.index && (isHost() || entry.addedBy === skyper.instance.viewerId)) {
+                    const remove = document.createElement('button');
+                    remove.className = 'iconBtn';
+                    remove.title = 'Remove';
+                    remove.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"></path></svg>';
+                    remove.addEventListener('click', () => skyper.send({ t: 'remove', index }));
+                    actions.appendChild(remove);
+                }
+
+                row.appendChild(actions);
+                return row;
+            }));
+        }
+    }
+
+    function escapeHtml(text) {
+        const span = document.createElement('span');
+        span.textContent = text;
+        return span.innerHTML;
     }
 
     // Booted from the snapshot: cue the current video at the host's last written position, paused
     // until the first sync tick says otherwise — starting to play on a stale flag would put every
     // late joiner a tick ahead of a paused room.
-    if (currentVideo()) pendingLoad = { position: state.position, playing: false };
+    if (currentVideo()) { pendingLoad = { position: state.position, playing: false }; fetchMeta(currentVideo().videoId); }
+    state.queue.forEach((entry) => fetchMeta(entry.videoId));
 
     render();
 })();

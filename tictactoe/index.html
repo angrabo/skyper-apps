@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="pl">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -15,76 +15,220 @@
      * writer — checkpoints the full state after every applied action; a late joiner boots from the
      * snapshot and then follows the relay. Identity is never checked here because it never needs
      * to be: senderId on every message is stamped by the Skyper server.
+     *
+     * Randomness (who plays whom, who gets X) can only ever happen once, or every page would
+     * disagree — so only the host rolls the dice, and always sends the concrete result rather than
+     * an instruction to roll. Timed transitions (a countdown ending, a result pausing before the
+     * next round) work the same way: the host alone schedules the next relay message off its own
+     * clock, and picks the driving back up the moment `session` reports it became host — the same
+     * shape the watch-together app uses for its sync heartbeat, just applied to a lobby instead of
+     * a video.
      */
     :root {
-        --bg: #14161b;
-        --panel: #1d2026;
-        --line: #2c3038;
-        --text: #e7e9ee;
-        --muted: #9aa1ad;
-        --accent: #7aa2ff;
-        --x: #7aa2ff;
-        --o: #ffb86b;
-        --win: #58d68d;
+        --bg: #0a0f1c;
+        --bg-2: #0f1830;
+        --panel: #121b30;
+        --panel-raised: #182444;
+        --line: #24304f;
+        --text: #eef1f8;
+        --muted: #8f9dc0;
+        --accent: #4d7fff;
+        --accent-2: #2a5adf;
+        --x: #5c8dff;
+        --o: #ffb648;
+        --win: #35d399;
+        --gold: #ffd166;
+        --radius: 14px;
     }
 
     * { box-sizing: border-box; }
 
     html, body {
         margin: 0;
-        height: 100%;
-        background: var(--bg);
+        min-height: 100%;
+        background: radial-gradient(circle at 50% -10%, var(--bg-2), var(--bg) 60%);
         color: var(--text);
         font: 14px/1.45 system-ui, "Segoe UI", sans-serif;
         user-select: none;
     }
 
-    body {
+    button { font: inherit; }
+
+    /* ─── Header ──────────────────────────────────────────────────────────── */
+
+    .topbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+    }
+    .topbar .logo { color: var(--accent); flex-shrink: 0; }
+    .topbar .word { font-weight: 800; letter-spacing: .03em; font-size: 13px; }
+    .topbar .word strong { color: var(--accent); }
+    .topbar .grow { flex: 1; }
+    .topbar .phase { color: var(--muted); font-size: 12px; }
+
+    .ghost {
+        padding: 6px 12px;
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        cursor: pointer;
+    }
+    .ghost:hover { border-color: var(--accent); color: var(--text); }
+
+    .primary {
+        padding: 10px 22px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        border: 0;
+        border-radius: 999px;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .primary:hover:not(:disabled) { filter: brightness(1.08); }
+    .primary:disabled { opacity: .4; cursor: default; }
+
+    /* ─── Splash ──────────────────────────────────────────────────────────── */
+
+    .splash {
+        min-height: 90vh;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 14px;
-        padding: 14px;
+        gap: 16px;
+        text-align: center;
+        padding: 20px;
+    }
+    .splash .logo { color: var(--accent); }
+    .splash h1 {
+        margin: 0;
+        font-size: clamp(26px, 7vmin, 42px);
+        letter-spacing: .04em;
+        font-weight: 800;
+    }
+    .splash h1 strong { color: var(--accent); }
+    .splash p { color: var(--muted); margin: 0; max-width: 320px; }
+
+    /* ─── Shared screen shell ─────────────────────────────────────────────── */
+
+    .screen {
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 18px 16px 34px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+    }
+    .screen h2 { margin: 0; font-size: 18px; }
+    .hint { color: var(--muted); text-align: center; margin: 0; }
+    .hint.small { font-size: 12px; }
+
+    /* ─── Lobby ───────────────────────────────────────────────────────────── */
+
+    .people {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+        width: 100%;
+    }
+    .person {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px 6px 6px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 999px;
     }
 
-    .status { color: var(--muted); min-height: 1.4em; text-align: center; }
-    .status strong { color: var(--text); }
+    .avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 700;
+        color: #fff;
+        flex-shrink: 0;
+    }
 
-    .seats { display: flex; gap: 10px; }
+    .crown { width: 16px; height: 16px; color: var(--gold); flex-shrink: 0; }
+    .crown.big { width: 56px; height: 56px; }
 
+    .modes {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: center;
+        width: 100%;
+    }
+    .modeCard {
+        flex: 1 1 200px;
+        max-width: 260px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding: 20px 16px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        color: var(--text);
+        cursor: pointer;
+        text-align: center;
+    }
+    .modeCard:hover:not(:disabled) { border-color: var(--accent); background: var(--panel-raised); }
+    .modeCard:disabled { opacity: .4; cursor: default; }
+    .modeCard .modeIcon { font-size: 30px; }
+    .modeCard strong { font-size: 15px; }
+    .modeCard span:last-child { color: var(--muted); font-size: 12px; }
+
+    /* ─── Match board (shared by normal + tournament) ────────────────────── */
+
+    .matchSeats {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
     .seat {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 6px 12px;
+        gap: 6px;
+        padding: 6px 10px;
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 10px;
-        color: var(--muted);
-        cursor: pointer;
-        font: inherit;
+        border-radius: 999px;
     }
     .seat[data-mine] { border-color: var(--accent); }
-    .seat:disabled { cursor: default; }
-    .seat .glyph { font-weight: 700; }
-    .seat[data-seat="X"] .glyph { color: var(--x); }
-    .seat[data-seat="O"] .glyph { color: var(--o); }
-    .seat .name { color: var(--text); }
+    .seat[data-seat="X"] .avatar { background: var(--x); }
+    .seat[data-seat="O"] .avatar { background: var(--o); }
+    .vs { color: var(--muted); font-size: 12px; }
 
     .board {
+        position: relative;
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 8px;
-        width: min(72vmin, 340px);
+        width: min(72vmin, 320px);
         aspect-ratio: 1;
     }
-
     .cell {
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: 12px;
-        font-size: clamp(28px, 12vmin, 56px);
+        font-size: clamp(26px, 11vmin, 50px);
         font-weight: 700;
         color: var(--text);
         cursor: pointer;
@@ -92,29 +236,90 @@
         place-items: center;
         transition: background .12s;
     }
-    .cell:hover:not(:disabled) { background: #23262d; }
+    .cell:hover:not(:disabled) { background: var(--panel-raised); }
     .cell:disabled { cursor: default; }
     .cell[data-mark="X"] { color: var(--x); }
     .cell[data-mark="O"] { color: var(--o); }
     .cell[data-win] { border-color: var(--win); box-shadow: inset 0 0 0 1px var(--win); }
 
-    .reset {
-        padding: 7px 16px;
+    .countVeil {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: rgba(10, 15, 28, .88);
+        border-radius: var(--radius);
+        font-size: clamp(36px, 14vmin, 64px);
+        font-weight: 800;
+        color: var(--accent);
+    }
+
+    .matchStatus { text-align: center; margin: 0; }
+
+    /* ─── Bracket ─────────────────────────────────────────────────────────── */
+
+    .bracket {
+        display: flex;
+        gap: 22px;
+        overflow-x: auto;
+        width: 100%;
+        padding: 4px 4px 10px;
+    }
+    .bracketCol {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 16px;
+        min-width: 168px;
+        flex-shrink: 0;
+    }
+    .bracketCol h3 {
+        margin: 0 0 2px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        color: var(--muted);
+        text-align: center;
+    }
+    .matchBox {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: 10px;
-        color: var(--text);
-        font: inherit;
-        cursor: pointer;
+        padding: 6px;
     }
-    .reset[hidden] { display: none; }
+    .matchBox.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .slot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 12px;
+        color: var(--muted);
+    }
+    .slot span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .slot.winner { color: var(--win); font-weight: 700; }
+    .slot.bye { color: var(--muted); font-style: italic; padding-left: 32px; }
+    .slot.pending { padding-left: 32px; opacity: .4; }
+
+    /* ─── Champion ────────────────────────────────────────────────────────── */
+
+    .champion {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        text-align: center;
+        padding: 20px;
+    }
+    .champion h2 { font-size: 26px; }
 </style>
 </head>
 <body>
-    <p class="status" id="status">Connecting to Skyper…</p>
-    <div class="seats" id="seats"></div>
-    <div class="board" id="board"></div>
-    <button class="reset" id="reset" hidden>Play again</button>
+    <div id="root"></div>
 
 <script src="../sdk/skyper-activity.js"></script>
 <script>
@@ -123,13 +328,11 @@
 
     const skyper = await SkyperActivity.connect();
 
-    // The whole game. `seats` maps mark → userId; order of relay delivery decides races (two
-    // people grabbing X: everyone applies the first grab, the second is a no-op everywhere).
-    let game = skyper.state ?? fresh();
+    const COUNTDOWN_MS = 3000;      // pre-move "3…2…1" before a match becomes clickable
+    const RESULT_PAUSE_MS = 3500;   // how long a normal-mode result sits before the next round
+    const MIN_BRACKET_MS = 3000;    // minimum time the bracket stays on screen between matches
 
-    function fresh() {
-        return { board: Array(9).fill(null), seats: { X: null, O: null }, turn: 'X', winner: null, line: null };
-    }
+    // ─── Pure game logic — identical on every page, driven only by relay actions ─────────────
 
     const LINES = [
         [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -137,147 +340,537 @@
         [0, 4, 8], [2, 4, 6]
     ];
 
-    function markOf(userId) {
-        if (game.seats.X === userId) return 'X';
-        if (game.seats.O === userId) return 'O';
+    function checkWinner(board) {
+        for (const line of LINES) {
+            const [a, b, c] = line;
+            if (board[a] && board[a] === board[b] && board[a] === board[c]) return { winner: board[a], line };
+        }
+        if (board.every(Boolean)) return { winner: 'draw', line: null };
         return null;
     }
 
-    /**
-     * Applies one action to the shared state. Deterministic and total: an action that is not legal
-     * *right now* changes nothing, which is how every page stays consistent — a stale click loses
-     * the race on every screen at once, not only on the screens that saw it late.
-     */
-    function apply(senderId, action) {
-        if (action.t === 'sit') {
-            const seat = action.seat === 'O' ? 'O' : 'X';
+    function freshBoard(a, b, seats, endsAt) {
+        return { a, b, seats, board: Array(9).fill(null), turn: 'X', winner: null, line: null, endsAt };
+    }
 
-            if (game.seats[seat] || game.winner) return;
-            if (markOf(senderId)) return; // one seat per person
+    function freshGame() {
+        return { phase: 'lobby', normal: null, tournament: null };
+    }
 
-            game.seats[seat] = senderId;
-            return;
+    function nextPow2(n) { let p = 1; while (p < n) p *= 2; return p; }
+
+    /** Round 0 gets exactly enough byes (a lone player, no opponent) to make every later round a
+     * full power of two — never a match with nobody in either seat. That is possible precisely
+     * because a bracket is only ever sized up to the next power of two, so byes are always fewer
+     * than round 0's own match count. */
+    function buildRounds(players) {
+        if (players.length <= 1) return [[{ a: players[0] ?? null, b: null, winner: players[0] ?? null }]];
+
+        const size = nextPow2(players.length);
+        const matchCount = size / 2;
+        const byes = size - players.length;
+
+        const round0 = [];
+        let k = 0;
+        for (let i = 0; i < matchCount; i++) {
+            if (i < byes) round0.push({ a: players[k++] ?? null, b: null, winner: null });
+            else round0.push({ a: players[k++] ?? null, b: players[k++] ?? null, winner: null });
         }
 
-        if (action.t === 'stand') {
-            const mark = markOf(senderId);
-            if (mark && !game.winner) game.seats[mark] = null;
-            return;
+        const rounds = [round0];
+        let count = matchCount;
+        while (count > 1) {
+            count /= 2;
+            rounds.push(Array.from({ length: count }, () => ({ a: null, b: null, winner: null })));
         }
+        return rounds;
+    }
 
-        if (action.t === 'move') {
-            const mark = markOf(senderId);
-            const cell = action.cell | 0;
-
-            if (!mark || game.winner || mark !== game.turn) return;
-            if (!game.seats.X || !game.seats.O) return;      // no moves before both seats are taken
-            if (cell < 0 || cell > 8 || game.board[cell]) return;
-
-            game.board[cell] = mark;
-            game.turn = mark === 'X' ? 'O' : 'X';
-
-            for (const line of LINES) {
-                if (line.every((i) => game.board[i] === mark)) {
-                    game.winner = mark;
-                    game.line = line;
-                    return;
-                }
-            }
-
-            if (game.board.every(Boolean)) game.winner = 'draw';
-            return;
-        }
-
-        if (action.t === 'reset') {
-            // Anyone seated may clear a finished board; mid-game only the players can agree by
-            // one of them standing up.
-            if (!game.winner && !markOf(senderId)) return;
-
-            game = { ...fresh(), seats: game.winner ? game.seats : { X: null, O: null } };
+    function propagate(rounds, round, match, winnerId) {
+        rounds[round][match].winner = winnerId;
+        if (round + 1 < rounds.length) {
+            const next = rounds[round + 1][Math.floor(match / 2)];
+            if (match % 2 === 0) next.a = winnerId; else next.b = winnerId;
         }
     }
+
+    /** Scans round-major for the next match with both seats filled and no winner yet, silently
+     * resolving byes (exactly one seat filled) as it goes. Round-major order is what makes a null
+     * seat unambiguous: by the time this reaches round N, round N-1 is fully resolved, so a null
+     * there can only mean "this slot really is empty", never "not decided yet". */
+    function resolveAndFindNext(t) {
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (let r = 0; r < t.rounds.length; r++) {
+                const round = t.rounds[r];
+                for (let m = 0; m < round.length; m++) {
+                    const match = round[m];
+                    if (match.winner) continue;
+                    if (match.a && match.b) return { round: r, match: m };
+                    if (match.a || match.b) { propagate(t.rounds, r, m, match.a || match.b); changed = true; break; }
+                }
+                if (changed) break;
+            }
+        }
+        return null;
+    }
+
+    function afterWinnerRecorded(t) {
+        const next = resolveAndFindNext(t);
+        const last = t.rounds[t.rounds.length - 1][0];
+
+        if (last.winner) {
+            t.champion = last.winner;
+            t.status = 'champion';
+            t.current = null;
+        } else {
+            t.current = next;
+            t.status = 'bracket-wait';
+            t.skips = [];
+            t.waitUntil = Date.now() + MIN_BRACKET_MS;
+        }
+    }
+
+    function neededSkips(t) { return Math.max(1, Math.ceil(t.players.length * 0.75)); }
+
+    /** Deterministic and total: an action that is not legal *right now* changes nothing, which is
+     * how every page stays consistent — a stale or duplicate message loses on every screen alike. */
+    function apply(senderId, action) {
+        const fromHost = senderId === skyper.instance.hostId;
+
+        switch (action.t) {
+            case 'startNormal': {
+                if (!fromHost || game.phase !== 'lobby') return;
+                game.phase = 'normal';
+                game.normal = { status: 'waiting', match: null, resultUntil: null };
+                return;
+            }
+
+            case 'startTournament': {
+                if (!fromHost || game.phase !== 'lobby') return;
+                const players = Array.isArray(action.players) ? action.players.filter((id) => typeof id === 'string') : [];
+                if (players.length === 0) return;
+
+                const t = {
+                    players, rounds: buildRounds(players), current: null, match: null,
+                    status: 'bracket-wait', skips: [], awaitingFirstStart: true,
+                    waitUntil: Date.now() + MIN_BRACKET_MS, champion: null
+                };
+                game.phase = 'tournament';
+                game.tournament = t;
+                afterWinnerRecorded(t);
+                return;
+            }
+
+            case 'toLobby': {
+                if (!fromHost) return;
+                game = freshGame();
+                return;
+            }
+
+            case 'beginMatch': {
+                if (!fromHost) return;
+                const { a, b, seats } = action;
+                const endsAt = Number(action.endsAt) || Date.now();
+                if (!a || !b || !seats || seats.X === seats.O) return;
+                if (![a, b].includes(seats.X) || ![a, b].includes(seats.O)) return;
+
+                if (game.phase === 'normal' && game.normal && (game.normal.status === 'waiting' || game.normal.status === 'result')) {
+                    game.normal.match = freshBoard(a, b, seats, endsAt);
+                    game.normal.status = 'active';
+                    game.normal.resultUntil = null;
+                    return;
+                }
+
+                if (game.phase === 'tournament' && game.tournament && game.tournament.current &&
+                    (game.tournament.status === 'bracket-wait' || game.tournament.status === 'replay')) {
+                    const expected = game.tournament.rounds[game.tournament.current.round][game.tournament.current.match];
+                    if (![expected.a, expected.b].includes(a) || ![expected.a, expected.b].includes(b)) return;
+
+                    game.tournament.match = freshBoard(a, b, seats, endsAt);
+                    game.tournament.status = 'active';
+                    return;
+                }
+                return;
+            }
+
+            case 'move': {
+                const active = game.phase === 'normal' ? game.normal?.match
+                    : game.phase === 'tournament' ? game.tournament?.match
+                        : null;
+                const status = game.phase === 'normal' ? game.normal?.status : game.tournament?.status;
+                if (!active || status !== 'active' || active.winner) return;
+                if (Date.now() < active.endsAt) return; // no moves while the countdown is still up
+
+                const mark = active.seats.X === senderId ? 'X' : active.seats.O === senderId ? 'O' : null;
+                const cell = action.cell | 0;
+                if (!mark || mark !== active.turn) return;
+                if (cell < 0 || cell > 8 || active.board[cell]) return;
+
+                active.board[cell] = mark;
+                active.turn = mark === 'X' ? 'O' : 'X';
+
+                const result = checkWinner(active.board);
+                if (!result) return;
+
+                active.winner = result.winner;
+                active.line = result.line;
+
+                if (game.phase === 'normal') {
+                    game.normal.status = 'result';
+                    game.normal.resultUntil = Date.now() + RESULT_PAUSE_MS;
+                    return;
+                }
+
+                const t = game.tournament;
+                if (result.winner === 'draw') { t.status = 'replay'; return; }
+
+                propagate(t.rounds, t.current.round, t.current.match, active.seats[result.winner]);
+                t.awaitingFirstStart = false;
+                afterWinnerRecorded(t);
+                return;
+            }
+
+            case 'skip': {
+                const t = game.tournament;
+                if (game.phase !== 'tournament' || !t || t.status !== 'bracket-wait') return;
+                if (!t.players.includes(senderId)) return; // only players' clicks count toward quorum
+                if (!t.skips.includes(senderId)) t.skips.push(senderId);
+                return;
+            }
+        }
+    }
+
+    // ─── Host driving: schedules the one next relay message a running phase needs ────────────
+
+    let hostTimer = null;
+
+    function shuffle(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    }
+
+    function randomSeats(a, b) { return Math.random() < 0.5 ? { X: a, O: b } : { X: b, O: a }; }
+
+    function beginNormalMatch() {
+        const ids = skyper.instance.people.map((p) => p.id);
+        if (ids.length < 2) return;
+        const [a, b] = shuffle(ids.slice()).slice(0, 2);
+        skyper.send({ t: 'beginMatch', a, b, seats: randomSeats(a, b), endsAt: Date.now() + COUNTDOWN_MS });
+    }
+
+    function beginTournamentMatch() {
+        const t = game.tournament;
+        if (!t.current) return;
+        const match = t.rounds[t.current.round][t.current.match];
+        if (!match.a || !match.b) return;
+        skyper.send({ t: 'beginMatch', a: match.a, b: match.b, seats: randomSeats(match.a, match.b), endsAt: Date.now() + COUNTDOWN_MS });
+    }
+
+    function quorumReached(t) {
+        return t.awaitingFirstStart || t.skips.includes(skyper.instance.hostId) || t.skips.length >= neededSkips(t);
+    }
+
+    /** Called after anything that could change what the host ought to be doing next: an applied
+     * message, a session change (host succession, or enough people to start), or boot. Re-entrant
+     * and idempotent — it only ever looks at the current state, never accumulates its own. */
+    function scheduleHostWork() {
+        if (hostTimer) { clearTimeout(hostTimer); hostTimer = null; }
+        if (!skyper.instance.isHost) return;
+
+        if (game.phase === 'normal' && game.normal) {
+            const n = game.normal;
+            if (n.status === 'waiting') beginNormalMatch();
+            else if (n.status === 'result') {
+                const delay = n.resultUntil - Date.now();
+                if (delay <= 0) beginNormalMatch();
+                else hostTimer = setTimeout(scheduleHostWork, delay);
+            }
+            return;
+        }
+
+        if (game.phase === 'tournament' && game.tournament) {
+            const t = game.tournament;
+            if (t.status === 'replay') beginTournamentMatch();
+            else if (t.status === 'bracket-wait' && t.current && quorumReached(t)) {
+                const delay = t.waitUntil - Date.now();
+                if (delay <= 0) beginTournamentMatch();
+                else hostTimer = setTimeout(scheduleHostWork, delay);
+            }
+        }
+    }
+
+    // ─── Wiring ────────────────────────────────────────────────────────────────────────────
+
+    let game = (skyper.state && skyper.state.phase) ? skyper.state : freshGame();
+    let uiStage = 'splash';
 
     skyper.on('message', (senderId, action) => {
         apply(senderId, action);
 
-        // The host checkpoints after every applied action. Everyone *computes* the same state;
-        // exactly one writes it, because two writers with different timing would fight over the
-        // one authoritative copy late joiners boot from.
-        if (skyper.instance.isHost) skyper.setState(game);
-
+        if (skyper.instance.isHost) {
+            skyper.setState(game);
+            scheduleHostWork();
+        }
         render();
     });
 
-    skyper.on('session', render);
+    skyper.on('session', () => {
+        if (skyper.instance.isHost) scheduleHostWork();
+        render();
+    });
 
-    // ─── Rendering ───────────────────────────────────────────────────────────
+    if (skyper.instance.isHost) scheduleHostWork();
 
-    const statusEl = document.getElementById('status');
-    const seatsEl = document.getElementById('seats');
-    const boardEl = document.getElementById('board');
-    const resetEl = document.getElementById('reset');
+    // A steady local tick — never sent anywhere — is what keeps countdowns and "next round in Xs"
+    // live without inventing a relay message for every second that passes.
+    setInterval(() => { if (uiStage === 'app') render(); }, 250);
 
-    for (let i = 0; i < 9; i++) {
-        const cell = document.createElement('button');
-        cell.className = 'cell';
-        cell.addEventListener('click', () => skyper.send({ t: 'move', cell: i }));
-        boardEl.appendChild(cell);
-    }
+    // ─── Rendering ─────────────────────────────────────────────────────────────────────────
 
-    resetEl.addEventListener('click', () => skyper.send({ t: 'reset' }));
-
-    function nameOf(userId) {
-        const person = skyper.instance.people.find((p) => p.id === userId);
-        return person ? person.name : 'someone';
-    }
-
-    function render() {
-        const me = skyper.instance.viewerId;
-        const myMark = markOf(me);
-
-        seatsEl.replaceChildren(...['X', 'O'].map((seat) => {
-            const holder = game.seats[seat];
-            const button = document.createElement('button');
-
-            button.className = 'seat';
-            button.dataset.seat = seat;
-            if (holder === me) button.dataset.mine = '';
-
-            const glyph = Object.assign(document.createElement('span'), { className: 'glyph', textContent: seat });
-            const name = Object.assign(document.createElement('span'), {
-                className: holder ? 'name' : '',
-                textContent: holder ? nameOf(holder) : 'take this seat'
-            });
-
-            button.append(glyph, name);
-            button.disabled = Boolean(game.winner) || (holder !== null && holder !== me) || (myMark !== null && holder !== me);
-            button.addEventListener('click', () => skyper.send({ t: holder === me ? 'stand' : 'sit', seat }));
-
-            return button;
-        }));
-
-        [...boardEl.children].forEach((cell, i) => {
-            const mark = game.board[i];
-
-            cell.textContent = mark ?? '';
-            if (mark) cell.dataset.mark = mark; else delete cell.dataset.mark;
-            if (game.line && game.line.includes(i)) cell.dataset.win = ''; else delete cell.dataset.win;
-            cell.disabled = Boolean(mark || game.winner || !myMark || game.turn !== myMark || !game.seats.X || !game.seats.O);
-        });
-
-        resetEl.hidden = !game.winner;
-
-        if (game.winner === 'draw') statusEl.innerHTML = 'A draw.';
-        else if (game.winner) statusEl.innerHTML = `<strong>${escapeHtml(nameOf(game.seats[game.winner]))}</strong> wins as ${game.winner}!`;
-        else if (!game.seats.X || !game.seats.O) statusEl.textContent = 'Waiting for both seats to be taken…';
-        else statusEl.innerHTML = `<strong>${escapeHtml(nameOf(game.seats[game.turn]))}</strong> to move (${game.turn}).`;
-    }
+    const root = document.getElementById('root');
 
     function escapeHtml(text) {
         const span = document.createElement('span');
         span.textContent = text;
         return span.innerHTML;
     }
+
+    function nameOf(id) {
+        const person = skyper.instance.people.find((p) => p.id === id);
+        return person ? person.name : 'ktoś';
+    }
+
+    function hashHue(id) {
+        let h = 0;
+        for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+        return h % 360;
+    }
+
+    function avatarHtml(id) {
+        const letter = nameOf(id).slice(0, 1).toUpperCase() || '?';
+        return `<span class="avatar" style="background:hsl(${hashHue(id)} 65% 45%)">${escapeHtml(letter)}</span>`;
+    }
+
+    function crownSvg(cls) {
+        return `<svg class="crown ${cls || ''}" viewBox="0 0 24 24" fill="currentColor"><path d="M3 8l4 4 5-7 5 7 4-4-2 11H5L3 8z"/></svg>`;
+    }
+
+    function logoSvg(size) {
+        const ticks = [0, 45, 90, 135, 180, 225, 270, 315]
+            .map((deg) => `<line x1="50" y1="6" x2="50" y2="16" stroke="currentColor" stroke-width="3" transform="rotate(${deg} 50 50)"/>`)
+            .join('');
+        return `<svg class="logo" width="${size}" height="${size}" viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="30" stroke="currentColor" stroke-width="4"/>
+            ${ticks}
+            <line x1="32" y1="32" x2="68" y2="68" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+            <line x1="68" y1="32" x2="32" y2="68" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+        </svg>`;
+    }
+
+    function backBtn(isHost) {
+        return isHost ? `<button class="ghost" data-action="to-lobby">Powrót do lobby</button>` : '';
+    }
+
+    function boardHtml(match, viewerId, hostId) {
+        const mySeat = match.seats.X === viewerId ? 'X' : match.seats.O === viewerId ? 'O' : null;
+        const countingDown = Date.now() < match.endsAt;
+        const remaining = Math.max(0, Math.ceil((match.endsAt - Date.now()) / 1000));
+
+        const seats = ['X', 'O'].map((seat) => {
+            const id = match.seats[seat];
+            return `<div class="seat" data-seat="${seat}" ${id === viewerId ? 'data-mine' : ''}>
+                ${avatarHtml(id)}<span>${escapeHtml(nameOf(id))}</span>${id === hostId ? crownSvg('') : ''}
+            </div>`;
+        }).join('<span class="vs">vs</span>');
+
+        const cells = match.board.map((mark, i) => {
+            const win = Boolean(match.line && match.line.includes(i));
+            const disabled = countingDown || Boolean(mark) || Boolean(match.winner) || mySeat !== match.turn;
+            return `<button class="cell" data-action="cell" data-cell="${i}" ${disabled ? 'disabled' : ''} ${mark ? `data-mark="${mark}"` : ''} ${win ? 'data-win' : ''}>${mark ?? ''}</button>`;
+        }).join('');
+
+        let status;
+        if (countingDown) status = `Start za <strong>${remaining}</strong>…`;
+        else if (match.winner === 'draw') status = 'Remis!';
+        else if (match.winner) status = `<strong>${escapeHtml(nameOf(match.seats[match.winner]))}</strong> wygrywa!`;
+        else status = `<strong>${escapeHtml(nameOf(match.seats[match.turn]))}</strong> (${match.turn}) rusza się`;
+
+        return `
+            <div class="matchSeats">${seats}</div>
+            <div class="board">
+                ${cells}
+                ${countingDown ? `<div class="countVeil">${remaining > 0 ? remaining : 'Start!'}</div>` : ''}
+            </div>
+            <p class="matchStatus">${status}</p>
+        `;
+    }
+
+    function roundLabel(rounds, idx) {
+        const fromEnd = rounds.length - 1 - idx;
+        if (fromEnd === 0) return 'Finał';
+        if (fromEnd === 1) return 'Półfinał';
+        if (fromEnd === 2) return 'Ćwierćfinał';
+        return `Runda ${idx + 1}`;
+    }
+
+    function bracketHtml(t) {
+        const cols = t.rounds.map((round, ri) => {
+            const matches = round.map((match, mi) => {
+                const isCurrent = t.current && t.current.round === ri && t.current.match === mi;
+                const slots = ['a', 'b'].map((slot) => {
+                    const id = match[slot];
+                    if (!id) {
+                        // A match already has a winner the instant one side is a genuine bye — an
+                        // empty slot with no winner yet just hasn't heard from the round before it.
+                        return match.winner ? `<div class="slot bye">wolny los</div>` : `<div class="slot pending">—</div>`;
+                    }
+                    const isWinner = Boolean(match.winner) && id === match.winner;
+                    return `<div class="slot ${isWinner ? 'winner' : ''}">${avatarHtml(id)}<span>${escapeHtml(nameOf(id))}</span></div>`;
+                }).join('');
+                return `<div class="matchBox ${isCurrent ? 'current' : ''}">${slots}</div>`;
+            }).join('');
+            return `<div class="bracketCol"><h3>${roundLabel(t.rounds, ri)}</h3>${matches}</div>`;
+        }).join('');
+        return `<div class="bracket">${cols}</div>`;
+    }
+
+    function splashHtml() {
+        return `
+            <div class="splash">
+                ${logoSvg(110)}
+                <h1>TIC TAC<strong>TOE</strong></h1>
+                <p>Kółko i krzyżyk dla całej ekipy — zwykła gra albo turniej z drabinką.</p>
+                <button class="primary" data-action="enter-app">Dołącz</button>
+            </div>
+        `;
+    }
+
+    function lobbyHtml(isHost, hostId) {
+        const people = skyper.instance.people;
+        const canStart = people.length >= 2;
+
+        const list = people.map((p) => `
+            <li class="person">
+                ${avatarHtml(p.id)}
+                <span>${escapeHtml(p.name)}${p.id === skyper.instance.viewerId ? ' (Ty)' : ''}</span>
+                ${p.id === hostId ? crownSvg('') : ''}
+            </li>
+        `).join('');
+
+        const modes = isHost ? `
+            <div class="modes">
+                <button class="modeCard" data-action="start-normal" ${canStart ? '' : 'disabled'}>
+                    <span class="modeIcon">🎲</span>
+                    <strong>Zwykła gra</strong>
+                    <span>Losowe pary graczy, runda za rundą.</span>
+                </button>
+                <button class="modeCard" data-action="start-tournament" ${canStart ? '' : 'disabled'}>
+                    <span class="modeIcon">🏆</span>
+                    <strong>Turniej</strong>
+                    <span>Drabinka pucharowa aż do finału.</span>
+                </button>
+            </div>
+            ${canStart ? '' : `<p class="hint small">Potrzeba co najmniej 2 graczy.</p>`}
+        ` : `<p class="hint">Gospodarz ${escapeHtml(nameOf(hostId))} wybiera tryb gry…</p>`;
+
+        return `<h2>Lobby</h2><ul class="people">${list}</ul>${modes}`;
+    }
+
+    function normalHtml(isHost) {
+        const n = game.normal;
+        const viewerId = skyper.instance.viewerId;
+        const hostId = skyper.instance.hostId;
+
+        if (!n || n.status === 'waiting') {
+            return `<h2>Zwykła gra</h2><p class="hint">Czekam na co najmniej 2 graczy…</p>${backBtn(isHost)}`;
+        }
+
+        return `
+            <h2>Zwykła gra</h2>
+            ${boardHtml(n.match, viewerId, hostId)}
+            ${n.status === 'result' ? `<p class="hint">Kolejna runda za ${Math.max(0, Math.ceil((n.resultUntil - Date.now()) / 1000))}s</p>` : ''}
+            ${backBtn(isHost)}
+        `;
+    }
+
+    function tournamentHtml(isHost) {
+        const t = game.tournament;
+        const viewerId = skyper.instance.viewerId;
+        const hostId = skyper.instance.hostId;
+        if (!t) return '';
+
+        if (t.status === 'champion') {
+            return `
+                <div class="champion">
+                    ${crownSvg('big')}
+                    <h2>${escapeHtml(nameOf(t.champion))}</h2>
+                    <p class="hint">zostaje mistrzem turnieju!</p>
+                    ${isHost ? `<button class="primary" data-action="to-lobby">Powrót do lobby</button>` : ''}
+                </div>
+            `;
+        }
+
+        const roundTitle = t.current ? roundLabel(t.rounds, t.current.round) : '';
+
+        let matchArea = '';
+        if (t.status === 'active' && t.match) {
+            matchArea = boardHtml(t.match, viewerId, hostId);
+        } else if (t.status === 'replay') {
+            matchArea = `<p class="hint">Remis! Rewanż zaraz się zacznie…</p>`;
+        } else if (t.status === 'bracket-wait') {
+            const iAmPlayer = t.players.includes(viewerId);
+            const iSkipped = t.skips.includes(viewerId);
+            matchArea = `
+                <p class="hint">${t.awaitingFirstStart ? 'Turniej się zaczyna…' : 'Kliknij Dalej, aby przejść do kolejnego meczu'}</p>
+                ${iAmPlayer ? `<button class="primary" data-action="skip" ${iSkipped ? 'disabled' : ''}>${iSkipped ? 'Czekasz na resztę…' : 'Dalej →'}</button>` : ''}
+                <p class="hint small">${t.skips.length} / ${neededSkips(t)} kliknięć</p>
+            `;
+        }
+
+        return `<h2>Turniej — ${escapeHtml(roundTitle)}</h2>${bracketHtml(t)}<div class="matchArea">${matchArea}</div>${backBtn(isHost)}`;
+    }
+
+    function headerHtml(isHost) {
+        const label = game.phase === 'lobby' ? 'Lobby' : game.phase === 'normal' ? 'Zwykła gra' : 'Turniej';
+        return `
+            <div class="topbar">
+                ${logoSvg(22)}
+                <span class="word">TICTAC<strong>TOE</strong></span>
+                <span class="grow"></span>
+                <span class="phase">${label}</span>
+            </div>
+        `;
+    }
+
+    function render() {
+        if (uiStage === 'splash') { root.innerHTML = splashHtml(); return; }
+
+        const isHost = skyper.instance.isHost;
+        let body = '';
+        if (game.phase === 'lobby') body = lobbyHtml(isHost, skyper.instance.hostId);
+        else if (game.phase === 'normal') body = normalHtml(isHost);
+        else if (game.phase === 'tournament') body = tournamentHtml(isHost);
+
+        root.innerHTML = `${headerHtml(isHost)}<div class="screen">${body}</div>`;
+    }
+
+    root.addEventListener('click', (event) => {
+        const el = event.target.closest('[data-action]');
+        if (!el) return;
+        const action = el.dataset.action;
+
+        if (action === 'enter-app') { uiStage = 'app'; render(); return; }
+        if (action === 'start-normal') { skyper.send({ t: 'startNormal' }); return; }
+        if (action === 'start-tournament') { skyper.send({ t: 'startTournament', players: shuffle(skyper.instance.people.map((p) => p.id)) }); return; }
+        if (action === 'to-lobby') { skyper.send({ t: 'toLobby' }); return; }
+        if (action === 'skip') { skyper.send({ t: 'skip' }); return; }
+        if (action === 'cell') { skyper.send({ t: 'move', cell: Number(el.dataset.cell) }); return; }
+    });
 
     render();
 })();
