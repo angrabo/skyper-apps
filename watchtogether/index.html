@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watch Together</title>
+<style>
+    /*
+     * Backend-free watch-together on the Skyper activity platform.
+     *
+     * Host-authoritative playback: the host's page owns the transport. Their YouTube player's own
+     * controls are live; every play/pause/seek they make is broadcast over the relay and every
+     * other page follows, with a periodic sync tick correcting drift. Anyone may add to the queue
+     * by pasting a link. The host checkpoints queue + position into the snapshot, which is what a
+     * late joiner boots from. Positions are "as of the moment sent" — applied on receipt with no
+     * clock exchange, because a relay hop is tens of milliseconds against a drift tolerance of a
+     * second and a half.
+     *
+     * This page embeds the real YouTube IFrame player — which is the whole reason activities moved
+     * to a separate real origin: the player needs its own storage and network, and gets both here
+     * without ever sharing Skyper's origin.
+     */
+    :root {
+        --bg: #14161b;
+        --panel: #1d2026;
+        --line: #2c3038;
+        --text: #e7e9ee;
+        --muted: #9aa1ad;
+        --accent: #7aa2ff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+        font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+
+    body { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+
+    .stage { flex: 1; min-height: 0; position: relative; background: #000; border-radius: 10px; overflow: hidden; }
+    .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+    .empty {
+        position: absolute; inset: 0;
+        display: grid; place-items: center;
+        color: var(--muted); text-align: center; padding: 16px;
+    }
+
+    /* An explicit `display` beats the UA's `[hidden] { display: none }`, so without this the
+       paste-a-link notice sits over the video forever. Same guard for the shield. */
+    .empty[hidden], .shield[hidden] { display: none; }
+
+    /* Followers watch; the host drives. A transparent shield over a follower's player is what
+       keeps YouTube's own controls host-only without hacking the player itself. The shield leaves
+       the bottom strip uncovered so captions/settings stay reachable? No — all of it: a paused
+       follower clicking play would silently fork the room. */
+    .shield { position: absolute; inset: 0; }
+
+    .bar { display: flex; gap: 8px; }
+
+    .bar input {
+        flex: 1;
+        padding: 8px 10px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--text);
+        font: inherit;
+    }
+    .bar input::placeholder { color: var(--muted); }
+
+    .bar button {
+        padding: 8px 14px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+    }
+
+    .queue { max-height: 30%; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+
+    .item {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+    }
+    .item[data-current] { border-color: var(--accent); color: var(--text); }
+    .item .video { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .item button { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; }
+    .item button:hover { color: var(--text); }
+
+    .note { color: var(--muted); text-align: center; margin: 0; }
+</style>
+</head>
+<body>
+    <div class="stage">
+        <div id="player"></div>
+        <div class="empty" id="empty">Paste a YouTube link below to start watching together.</div>
+        <div class="shield" id="shield" hidden></div>
+    </div>
+
+    <form class="bar" id="addForm">
+        <input id="addInput" placeholder="https://youtube.com/watch?v=… or youtu.be/…" autocomplete="off">
+        <button type="submit">Add to queue</button>
+    </form>
+
+    <div class="queue" id="queue"></div>
+    <p class="note" id="note"></p>
+
+<script src="../sdk/skyper-activity.js"></script>
+<script>
+(async () => {
+    'use strict';
+
+    const skyper = await SkyperActivity.connect();
+
+    /** Queue + transport, exactly what the snapshot holds. `position` is as of `writing time` —
+     * good enough for a boot; the first sync tick corrects the rest. */
+    let state = skyper.state ?? { queue: [], index: -1, playing: false, position: 0 };
+
+    const DRIFT_TOLERANCE = 1.5;   // seconds a follower may lag before being snapped
+    const SYNC_EVERY_MS = 5000;
+
+    const isHost = () => skyper.instance.isHost;
+
+    // ─── YouTube player ──────────────────────────────────────────────────────
+
+    let player = null;
+    let playerReady = false;
+
+    // Applied by relay handlers *before* the player exists or is ready, and replayed once it is.
+    let pendingLoad = null;
+
+    // Host-side: state changes the host's own player fires while we are applying a remote command
+    // must not be re-broadcast as if the host touched the controls.
+    let applying = false;
+
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(tag);
+
+    window.onYouTubeIframeAPIReady = () => {
+        player = new YT.Player('player', {
+            playerVars: { rel: 0, playsinline: 1 },
+            events: {
+                onReady: () => {
+                    playerReady = true;
+                    if (pendingLoad) { loadCurrent(pendingLoad.position, pendingLoad.playing); pendingLoad = null; }
+                },
+                onStateChange: (event) => {
+                    if (!isHost() || applying) return;
+
+                    // The host touching their own controls IS the transport. Everyone else hears
+                    // about it as a relay message.
+                    if (event.data === YT.PlayerState.PLAYING)
+                        skyper.send({ t: 'play', at: player.getCurrentTime() });
+                    else if (event.data === YT.PlayerState.PAUSED)
+                        skyper.send({ t: 'pause', at: player.getCurrentTime() });
+                    else if (event.data === YT.PlayerState.ENDED)
+                        skyper.send({ t: 'jump', index: state.index + 1 });
+                }
+            }
+        });
+    };
+
+    function currentVideo() {
+        return state.index >= 0 ? state.queue[state.index] ?? null : null;
+    }
+
+    function loadCurrent(position, playing) {
+        const video = currentVideo();
+        if (!video) { if (playerReady) player.stopVideo(); render(); return; }
+        if (!playerReady) { pendingLoad = { position, playing }; render(); return; }
+
+        applying = true;
+        player.loadVideoById(video.videoId, position || 0);
+        if (!playing) setTimeout(() => { player.pauseVideo(); applying = false; }, 500);
+        else setTimeout(() => { applying = false; }, 500);
+
+        render();
+    }
+
+    // ─── The shared state machine ────────────────────────────────────────────
+
+    function apply(senderId, action) {
+        const fromHost = senderId === skyper.instance.hostId;
+
+        switch (action.t) {
+            case 'add': {
+                const videoId = parseVideoId(String(action.video ?? ''));
+                if (!videoId) return;
+
+                state.queue.push({ videoId, addedBy: senderId });
+
+                // The first addition starts playback for the room — nobody wants to add a video
+                // and then hunt for a play button that only the host can see.
+                if (state.index === -1) {
+                    state.index = 0;
+                    state.playing = true;
+                    state.position = 0;
+                    loadCurrent(0, true);
+                }
+
+                return;
+            }
+
+            case 'remove': {
+                if (!fromHost && senderId !== state.queue[action.index | 0]?.addedBy) return;
+
+                const index = action.index | 0;
+                if (index < 0 || index >= state.queue.length || index === state.index) return;
+
+                state.queue.splice(index, 1);
+                if (index < state.index) state.index--;
+                return;
+            }
+
+            case 'jump': {
+                if (!fromHost) return;
+
+                const index = action.index | 0;
+
+                state.index = index >= 0 && index < state.queue.length ? index : -1;
+                state.position = 0;
+                state.playing = state.index !== -1;
+                loadCurrent(0, state.playing);
+                return;
+            }
+
+            case 'play':
+            case 'pause':
+            case 'sync': {
+                if (!fromHost) return;
+
+                state.playing = action.t === 'play' || (action.t === 'sync' && Boolean(action.playing));
+                state.position = Number(action.at) || 0;
+
+                if (!isHost()) follow();
+                return;
+            }
+        }
+    }
+
+    /** A follower bringing its player to the host's reported position. Snap only past the
+     * tolerance: constant micro-seeks stutter, and a second and a half is invisible in a video. */
+    function follow() {
+        if (!playerReady || !currentVideo()) return;
+
+        applying = true;
+
+        const drift = Math.abs(player.getCurrentTime() - state.position);
+        if (drift > DRIFT_TOLERANCE) player.seekTo(state.position, true);
+
+        if (state.playing) player.playVideo(); else player.pauseVideo();
+
+        setTimeout(() => { applying = false; }, 300);
+    }
+
+    skyper.on('message', (senderId, action) => {
+        apply(senderId, action);
+
+        if (isHost()) {
+            if (playerReady && currentVideo()) state.position = player.getCurrentTime();
+            skyper.setState(state);
+        }
+
+        render();
+    });
+
+    // The host's heartbeat: drift correction for followers, and a fresh snapshot for whoever
+    // joins next. A new host (succession) starts ticking the moment the session event lands.
+    setInterval(() => {
+        if (!isHost() || !playerReady || !currentVideo()) return;
+
+        state.position = player.getCurrentTime();
+        state.playing = player.getPlayerState() === YT.PlayerState.PLAYING;
+
+        skyper.send({ t: 'sync', at: state.position, playing: state.playing });
+        skyper.setState(state);
+    }, SYNC_EVERY_MS);
+
+    skyper.on('session', render);
+
+    // ─── UI ──────────────────────────────────────────────────────────────────
+
+    const emptyEl = document.getElementById('empty');
+    const shieldEl = document.getElementById('shield');
+    const queueEl = document.getElementById('queue');
+    const noteEl = document.getElementById('note');
+    const formEl = document.getElementById('addForm');
+    const inputEl = document.getElementById('addInput');
+
+    formEl.addEventListener('submit', (event) => {
+        event.preventDefault();
+
+        const video = inputEl.value.trim();
+        if (parseVideoId(video)) { skyper.send({ t: 'add', video }); inputEl.value = ''; }
+        else noteEl.textContent = 'That does not look like a YouTube link.';
+    });
+
+    function parseVideoId(text) {
+        try {
+            const url = new URL(text);
+
+            if (url.hostname === 'youtu.be') return url.pathname.slice(1) || null;
+
+            if (/(^|\.)youtube\.com$/.test(url.hostname)) {
+                if (url.pathname === '/watch') return url.searchParams.get('v');
+                const short = url.pathname.match(/^\/(shorts|embed|live)\/([\w-]{5,})/);
+                if (short) return short[2];
+            }
+        } catch { /* not a URL — fall through */ }
+
+        return /^[\w-]{11}$/.test(text) ? text : null;
+    }
+
+    function nameOf(userId) {
+        const person = skyper.instance.people.find((p) => p.id === userId);
+        return person ? person.name : 'someone';
+    }
+
+    function render() {
+        emptyEl.hidden = Boolean(currentVideo());
+        shieldEl.hidden = isHost();
+
+        noteEl.textContent = isHost()
+            ? 'You are the host — your player controls everyone’s playback.'
+            : `${nameOf(skyper.instance.hostId)} controls playback.`;
+
+        queueEl.replaceChildren(...state.queue.map((entry, index) => {
+            const row = document.createElement('div');
+            row.className = 'item';
+            if (index === state.index) row.dataset.current = '';
+
+            const video = Object.assign(document.createElement('span'), {
+                className: 'video',
+                textContent: `${entry.videoId} — added by ${nameOf(entry.addedBy)}`
+            });
+            row.appendChild(video);
+
+            if (isHost() && index !== state.index) {
+                const play = Object.assign(document.createElement('button'), { textContent: '▶', title: 'Play this' });
+                play.addEventListener('click', () => skyper.send({ t: 'jump', index }));
+                row.appendChild(play);
+            }
+
+            if (index !== state.index && (isHost() || entry.addedBy === skyper.instance.viewerId)) {
+                const remove = Object.assign(document.createElement('button'), { textContent: '✕', title: 'Remove' });
+                remove.addEventListener('click', () => skyper.send({ t: 'remove', index }));
+                row.appendChild(remove);
+            }
+
+            return row;
+        }));
+    }
+
+    // Booted from the snapshot: cue the current video at the host's last written position, paused
+    // until the first sync tick says otherwise — starting to play on a stale flag would put every
+    // late joiner a tick ahead of a paused room.
+    if (currentVideo()) pendingLoad = { position: state.position, playing: false };
+
+    render();
+})();
+</script>
+</body>
+</html>

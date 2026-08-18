@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tic-tac-toe</title>
+<style>
+    /*
+     * Backend-free tic-tac-toe on the Skyper activity platform.
+     *
+     * The whole multiplayer model in one paragraph: every action is a relay message, the relay is
+     * ordered per session and every participant receives the same sequence (their own sends echo
+     * back too), so every page applies the same actions in the same order to the same starting
+     * state and stays consistent without a server knowing the rules. The host — the one snapshot
+     * writer — checkpoints the full state after every applied action; a late joiner boots from the
+     * snapshot and then follows the relay. Identity is never checked here because it never needs
+     * to be: senderId on every message is stamped by the Skyper server.
+     */
+    :root {
+        --bg: #14161b;
+        --panel: #1d2026;
+        --line: #2c3038;
+        --text: #e7e9ee;
+        --muted: #9aa1ad;
+        --accent: #7aa2ff;
+        --x: #7aa2ff;
+        --o: #ffb86b;
+        --win: #58d68d;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.45 system-ui, "Segoe UI", sans-serif;
+        user-select: none;
+    }
+
+    body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 14px;
+    }
+
+    .status { color: var(--muted); min-height: 1.4em; text-align: center; }
+    .status strong { color: var(--text); }
+
+    .seats { display: flex; gap: 10px; }
+
+    .seat {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        color: var(--muted);
+        cursor: pointer;
+        font: inherit;
+    }
+    .seat[data-mine] { border-color: var(--accent); }
+    .seat:disabled { cursor: default; }
+    .seat .glyph { font-weight: 700; }
+    .seat[data-seat="X"] .glyph { color: var(--x); }
+    .seat[data-seat="O"] .glyph { color: var(--o); }
+    .seat .name { color: var(--text); }
+
+    .board {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        width: min(72vmin, 340px);
+        aspect-ratio: 1;
+    }
+
+    .cell {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        font-size: clamp(28px, 12vmin, 56px);
+        font-weight: 700;
+        color: var(--text);
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: background .12s;
+    }
+    .cell:hover:not(:disabled) { background: #23262d; }
+    .cell:disabled { cursor: default; }
+    .cell[data-mark="X"] { color: var(--x); }
+    .cell[data-mark="O"] { color: var(--o); }
+    .cell[data-win] { border-color: var(--win); box-shadow: inset 0 0 0 1px var(--win); }
+
+    .reset {
+        padding: 7px 16px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        color: var(--text);
+        font: inherit;
+        cursor: pointer;
+    }
+    .reset[hidden] { display: none; }
+</style>
+</head>
+<body>
+    <p class="status" id="status">Connecting to Skyper…</p>
+    <div class="seats" id="seats"></div>
+    <div class="board" id="board"></div>
+    <button class="reset" id="reset" hidden>Play again</button>
+
+<script src="../sdk/skyper-activity.js"></script>
+<script>
+(async () => {
+    'use strict';
+
+    const skyper = await SkyperActivity.connect();
+
+    // The whole game. `seats` maps mark → userId; order of relay delivery decides races (two
+    // people grabbing X: everyone applies the first grab, the second is a no-op everywhere).
+    let game = skyper.state ?? fresh();
+
+    function fresh() {
+        return { board: Array(9).fill(null), seats: { X: null, O: null }, turn: 'X', winner: null, line: null };
+    }
+
+    const LINES = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8],
+        [0, 3, 6], [1, 4, 7], [2, 5, 8],
+        [0, 4, 8], [2, 4, 6]
+    ];
+
+    function markOf(userId) {
+        if (game.seats.X === userId) return 'X';
+        if (game.seats.O === userId) return 'O';
+        return null;
+    }
+
+    /**
+     * Applies one action to the shared state. Deterministic and total: an action that is not legal
+     * *right now* changes nothing, which is how every page stays consistent — a stale click loses
+     * the race on every screen at once, not only on the screens that saw it late.
+     */
+    function apply(senderId, action) {
+        if (action.t === 'sit') {
+            const seat = action.seat === 'O' ? 'O' : 'X';
+
+            if (game.seats[seat] || game.winner) return;
+            if (markOf(senderId)) return; // one seat per person
+
+            game.seats[seat] = senderId;
+            return;
+        }
+
+        if (action.t === 'stand') {
+            const mark = markOf(senderId);
+            if (mark && !game.winner) game.seats[mark] = null;
+            return;
+        }
+
+        if (action.t === 'move') {
+            const mark = markOf(senderId);
+            const cell = action.cell | 0;
+
+            if (!mark || game.winner || mark !== game.turn) return;
+            if (!game.seats.X || !game.seats.O) return;      // no moves before both seats are taken
+            if (cell < 0 || cell > 8 || game.board[cell]) return;
+
+            game.board[cell] = mark;
+            game.turn = mark === 'X' ? 'O' : 'X';
+
+            for (const line of LINES) {
+                if (line.every((i) => game.board[i] === mark)) {
+                    game.winner = mark;
+                    game.line = line;
+                    return;
+                }
+            }
+
+            if (game.board.every(Boolean)) game.winner = 'draw';
+            return;
+        }
+
+        if (action.t === 'reset') {
+            // Anyone seated may clear a finished board; mid-game only the players can agree by
+            // one of them standing up.
+            if (!game.winner && !markOf(senderId)) return;
+
+            game = { ...fresh(), seats: game.winner ? game.seats : { X: null, O: null } };
+        }
+    }
+
+    skyper.on('message', (senderId, action) => {
+        apply(senderId, action);
+
+        // The host checkpoints after every applied action. Everyone *computes* the same state;
+        // exactly one writes it, because two writers with different timing would fight over the
+        // one authoritative copy late joiners boot from.
+        if (skyper.instance.isHost) skyper.setState(game);
+
+        render();
+    });
+
+    skyper.on('session', render);
+
+    // ─── Rendering ───────────────────────────────────────────────────────────
+
+    const statusEl = document.getElementById('status');
+    const seatsEl = document.getElementById('seats');
+    const boardEl = document.getElementById('board');
+    const resetEl = document.getElementById('reset');
+
+    for (let i = 0; i < 9; i++) {
+        const cell = document.createElement('button');
+        cell.className = 'cell';
+        cell.addEventListener('click', () => skyper.send({ t: 'move', cell: i }));
+        boardEl.appendChild(cell);
+    }
+
+    resetEl.addEventListener('click', () => skyper.send({ t: 'reset' }));
+
+    function nameOf(userId) {
+        const person = skyper.instance.people.find((p) => p.id === userId);
+        return person ? person.name : 'someone';
+    }
+
+    function render() {
+        const me = skyper.instance.viewerId;
+        const myMark = markOf(me);
+
+        seatsEl.replaceChildren(...['X', 'O'].map((seat) => {
+            const holder = game.seats[seat];
+            const button = document.createElement('button');
+
+            button.className = 'seat';
+            button.dataset.seat = seat;
+            if (holder === me) button.dataset.mine = '';
+
+            const glyph = Object.assign(document.createElement('span'), { className: 'glyph', textContent: seat });
+            const name = Object.assign(document.createElement('span'), {
+                className: holder ? 'name' : '',
+                textContent: holder ? nameOf(holder) : 'take this seat'
+            });
+
+            button.append(glyph, name);
+            button.disabled = Boolean(game.winner) || (holder !== null && holder !== me) || (myMark !== null && holder !== me);
+            button.addEventListener('click', () => skyper.send({ t: holder === me ? 'stand' : 'sit', seat }));
+
+            return button;
+        }));
+
+        [...boardEl.children].forEach((cell, i) => {
+            const mark = game.board[i];
+
+            cell.textContent = mark ?? '';
+            if (mark) cell.dataset.mark = mark; else delete cell.dataset.mark;
+            if (game.line && game.line.includes(i)) cell.dataset.win = ''; else delete cell.dataset.win;
+            cell.disabled = Boolean(mark || game.winner || !myMark || game.turn !== myMark || !game.seats.X || !game.seats.O);
+        });
+
+        resetEl.hidden = !game.winner;
+
+        if (game.winner === 'draw') statusEl.innerHTML = 'A draw.';
+        else if (game.winner) statusEl.innerHTML = `<strong>${escapeHtml(nameOf(game.seats[game.winner]))}</strong> wins as ${game.winner}!`;
+        else if (!game.seats.X || !game.seats.O) statusEl.textContent = 'Waiting for both seats to be taken…';
+        else statusEl.innerHTML = `<strong>${escapeHtml(nameOf(game.seats[game.turn]))}</strong> to move (${game.turn}).`;
+    }
+
+    function escapeHtml(text) {
+        const span = document.createElement('span');
+        span.textContent = text;
+        return span.innerHTML;
+    }
+
+    render();
+})();
+</script>
+</body>
+</html>
