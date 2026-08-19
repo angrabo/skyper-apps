@@ -93,7 +93,7 @@
     /* ─── Shared screen shell ─────────────────────────────────────────────── */
 
     .screen {
-        max-width: 720px;
+        max-width: 900px;
         margin: 0 auto;
         padding: 16px 14px 32px;
         display: flex;
@@ -109,6 +109,21 @@
         padding: 16px;
         width: 100%;
     }
+
+    /* The history panel sits to the right of the board on anything wide enough for both; a narrow
+       or tall activity panel just wraps it underneath instead of squeezing the board. */
+    .playArea { display: flex; flex-wrap: wrap; gap: 14px; width: 100%; align-items: flex-start; }
+    .mainCol { flex: 3 1 380px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    .historyPanel { flex: 1 1 200px; max-width: 260px; }
+    .history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .history li {
+        display: flex; align-items: baseline; gap: 6px;
+        padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff;
+        font-size: 12px;
+    }
+    .history .who { font-weight: 700; flex-shrink: 0; }
+    .history .words { flex: 1; color: var(--muted); overflow-wrap: anywhere; }
+    .history .pts { font-weight: 700; }
 
     h2 { margin: 0 0 6px; font-size: 17px; }
     .hint { color: var(--muted); text-align: center; margin: 6px 0 0; font-size: 13px; }
@@ -199,8 +214,9 @@
         display: grid;
         grid-template-columns: repeat(15, 1fr);
         gap: 2px;
-        width: min(94vmin, 560px);
+        width: min(94vmin, 560px, 100%);
         aspect-ratio: 1;
+        margin: 0 auto;
         background: #23392f;
         padding: 4px;
         border-radius: 6px;
@@ -227,8 +243,14 @@
     .rackRow { display: flex; flex-direction: column; gap: 8px; align-items: center; width: 100%; }
     .rack { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
     .rack .tile { width: 40px; height: 40px; font-size: 19px; cursor: pointer; }
+    .rack .tile[draggable="true"] { cursor: grab; }
     .rack .tile.used { opacity: .25; cursor: default; }
     .rack .tile.exchange { outline: 2px solid var(--tw); outline-offset: -2px; }
+
+    .cell.dragover { outline: 2px dashed var(--accent); outline-offset: -2px; }
+    .preview { text-align: center; margin: 0; font-size: 12px; min-height: 1.2em; }
+    .preview[data-ok="false"] { color: var(--tw); }
+    .preview[data-ok="true"] { color: #2f6b52; }
 
     .picker { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
     .picker button {
@@ -245,6 +267,34 @@
     .results { display: flex; flex-direction: column; gap: 6px; width: 100%; }
     .resultRow { display: flex; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
     .resultRow[data-winner] { border-color: var(--accent); border-width: 2px; font-weight: 700; }
+
+    /* ─── Idle music control ──────────────────────────────────────────────── */
+
+    .musicPanel {
+        position: fixed;
+        right: 12px;
+        bottom: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 10px;
+        background: var(--paper);
+        border: 2px solid var(--ink);
+        border-radius: 12px;
+        z-index: 20;
+    }
+    .soundRow { display: flex; align-items: center; gap: 6px; }
+    .musicPanel .iconBtn {
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        font-size: 15px;
+        color: var(--ink);
+        line-height: 1;
+        padding: 2px;
+        width: 18px;
+    }
+    .musicPanel input[type="range"] { width: 70px; accent-color: var(--ink); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -417,7 +467,9 @@
     function freshGame() {
         return {
             phase: 'lobby', players: [], turn: 0, board: Array(225).fill(null),
-            racks: {}, bag: [], scores: {}, passStreak: 0, lastMove: null, finished: false
+            racks: {}, bag: [], scores: {}, passStreak: 0, lastMove: null, finished: false,
+            lastPlace: null, // the most recent placement, until superseded — what a reject vote can undo
+            history: [] // recent words played, newest first — display only
         };
     }
 
@@ -480,7 +532,13 @@
                 game.racks[senderId] = draw(game.bag, removeFromRack(game.racks[senderId], placements), placements.length);
                 game.scores[senderId] += points;
                 game.passStreak = 0;
-                game.lastMove = { by: senderId, points, words: check.words.map((cells) => cells.map((i) => game.board[i].letter).join('')) };
+                const words = check.words.map((cells) => cells.map((i) => game.board[i].letter).join(''));
+                game.lastMove = { by: senderId, points, words };
+                // Kept whole (not just the score) so a successful reject vote can put the exact
+                // tiles back — stays valid only until the next turn action closes the window.
+                game.lastPlace = { by: senderId, placements, points, votes: [] };
+                game.history.unshift({ by: senderId, words, points });
+                if (game.history.length > 12) game.history.length = 12;
 
                 if (game.bag.length === 0 && game.racks[senderId].length === 0) finishGame('empty');
                 else game.turn = (game.turn + 1) % game.players.length;
@@ -503,6 +561,7 @@
                 game.racks[senderId] = rack.concat(drawn);
                 game.passStreak++;
                 game.lastMove = { by: senderId, exchange: letters.length };
+                game.lastPlace = null;
                 bumpTurnOrEnd();
                 return;
             }
@@ -511,7 +570,28 @@
                 if (game.phase !== 'playing' || senderId !== game.players[game.turn]) return;
                 game.passStreak++;
                 game.lastMove = { by: senderId, pass: true };
+                game.lastPlace = null;
                 bumpTurnOrEnd();
+                return;
+            }
+
+            case 'reject': {
+                // No dictionary — the table judges a word by vote instead. Only the most recent
+                // placement is challengeable (the window closes the moment the next turn acts), the
+                // mover can't vote on their own word, and it takes half the players to overturn it.
+                const w = game.lastPlace;
+                if (game.phase !== 'playing' || !w || w.by === senderId) return;
+                if (!game.players.includes(senderId) || w.votes.includes(senderId)) return;
+                w.votes.push(senderId);
+
+                if (w.votes.length >= Math.ceil(game.players.length / 2)) {
+                    for (const p of w.placements) game.board[p.i] = null;
+                    game.scores[w.by] -= w.points;
+                    game.racks[w.by] = game.racks[w.by].concat(w.placements.map((p) => (p.blank ? '_' : p.letter)));
+                    game.lastMove = { by: w.by, rejected: true };
+                    game.history.shift(); // the word just reverted was the one on top
+                    game.lastPlace = null;
+                }
                 return;
             }
 
@@ -534,17 +614,127 @@
     let pending = [];
     let selectedRackSlot = null;
     let blankPickerFor = null; // rack slot index awaiting a letter choice
+    let blankPickerTarget = null; // board cell it's headed for, when known up front (drag-and-drop)
     let exchangeMode = false;
     let exchangeSelection = [];
+    let draggingSlot = null; // rack slot mid-drag; not re-rendered on every dragover, only on drop
 
     skyper.on('message', (senderId, action) => {
         apply(senderId, action);
         if (skyper.instance.isHost) skyper.setState(game);
         pending = []; selectedRackSlot = null; blankPickerFor = null;
+        if (action.t === 'place') playPlacedSfx();
         render();
     });
 
     skyper.on('session', render);
+
+    // ─── Sound — idle music and word-placed SFX, synthesised locally, never part of the shared
+    // game. No file to fetch or licence to worry about, and the two are deliberately different
+    // instruments (a slow sine pad vs. a quick triangle chime) with independent volumes, so
+    // turning one down never silences the other. Starts on the splash's own click, which is the
+    // user gesture autoplay needs.
+
+    let audioCtx = null;
+    let musicGain = null;
+    let sfxGain = null;
+    let soundStarted = false;
+
+    function savedVolumeFor(key, fallback) {
+        const stored = localStorage.getItem(key);
+        if (stored === null) return fallback; // nothing saved yet — Number(null) is 0, not "unset"
+        const raw = Number(stored);
+        return Number.isFinite(raw) && raw >= 0 && raw <= 100 ? raw : fallback;
+    }
+
+    function startSound() {
+        if (soundStarted) return;
+        soundStarted = true;
+
+        try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+        catch { return; } // no Web Audio here — sound just doesn't play, nothing else depends on it
+
+        musicGain = audioCtx.createGain();
+        musicGain.gain.value = (savedVolumeFor('scrabble-music-volume', 35) / 100) * 0.18; // stays quiet even at "100"
+        musicGain.connect(audioCtx.destination);
+
+        sfxGain = audioCtx.createGain();
+        sfxGain.gain.value = (savedVolumeFor('scrabble-sfx-volume', 70) / 100) * 0.5;
+        sfxGain.connect(audioCtx.destination);
+
+        [130.81, 164.81, 196.00, 246.94].forEach((freq, voice) => { // C3 E3 G3 B3, a soft add9
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+
+            const voiceGain = audioCtx.createGain();
+            voiceGain.gain.value = 0;
+            osc.connect(voiceGain);
+            voiceGain.connect(musicGain);
+            osc.start();
+
+            const swell = () => {
+                const now = audioCtx.currentTime;
+                voiceGain.gain.cancelScheduledValues(now);
+                voiceGain.gain.setValueAtTime(voiceGain.gain.value, now);
+                voiceGain.gain.linearRampToValueAtTime(0.6 + Math.random() * 0.4, now + 4 + voice);
+                voiceGain.gain.linearRampToValueAtTime(0.15, now + 9 + voice);
+            };
+            swell();
+            setInterval(swell, 9000 + voice * 700); // staggered per voice so the chord breathes, not pulses
+        });
+    }
+
+    /** A short two-note "tock-tick" — bright triangle wave with a fast attack/decay, nothing like
+     * the idle pad's slow sine swell, so the two are never mistaken for one sound. */
+    function playPlacedSfx() {
+        if (!audioCtx || !sfxGain) return;
+        const now = audioCtx.currentTime;
+        [523.25, 783.99].forEach((freq, i) => { // C5 then G5
+            const osc = audioCtx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+
+            const g = audioCtx.createGain();
+            g.gain.setValueAtTime(0, now + i * 0.08);
+            g.gain.linearRampToValueAtTime(1, now + i * 0.08 + 0.01);
+            g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.18);
+
+            osc.connect(g);
+            g.connect(sfxGain);
+            osc.start(now + i * 0.08);
+            osc.stop(now + i * 0.08 + 0.2);
+        });
+    }
+
+    function soundControl(panel, key, fallback, label, onChange) {
+        const row = document.createElement('div');
+        row.className = 'soundRow';
+        row.innerHTML = `<button class="iconBtn" title="${label}">${label === 'Muzyka' ? '♪' : '🔔'}</button>
+            <input type="range" min="0" max="100" value="${savedVolumeFor(key, fallback)}">`;
+        panel.appendChild(row);
+
+        const range = row.querySelector('input');
+        let mutedFrom = null;
+
+        function commit(value) {
+            localStorage.setItem(key, String(value));
+            onChange(Number(value));
+        }
+
+        range.addEventListener('input', () => commit(range.value));
+        row.querySelector('button').addEventListener('click', () => {
+            if (mutedFrom === null) { mutedFrom = range.value; range.value = 0; }
+            else { range.value = mutedFrom; mutedFrom = null; }
+            commit(range.value);
+        });
+    }
+
+    const soundPanel = document.createElement('div');
+    soundPanel.className = 'musicPanel';
+    document.body.appendChild(soundPanel);
+    soundControl(soundPanel, 'scrabble-music-volume', 35, 'Muzyka', (v) => { if (musicGain) musicGain.gain.value = (v / 100) * 0.18; });
+    soundControl(soundPanel, 'scrabble-sfx-volume', 70, 'Dźwięki', (v) => { if (sfxGain) sfxGain.gain.value = (v / 100) * 0.5; });
 
     // ─── Rendering ─────────────────────────────────────────────────────────────────────────
 
@@ -616,6 +806,8 @@
         `).join('')}</div>`;
     }
 
+    const PREMIUM_LABEL = { dl: 'PL', tl: 'TL', dw: 'PS', tw: 'TS', star: '★' };
+
     function boardHtml(myLetterOf) {
         const cells = [];
         for (let i = 0; i < 225; i++) {
@@ -624,8 +816,8 @@
             let inner = '';
             if (occupied) inner = tileHtml(occupied.blank ? myLetterOf(occupied) : occupied.letter, occupied.blank ? 'blank' : '');
             else if (pend) inner = tileHtml(pend.letter, `pending ${pend.blank ? 'blank' : ''}`);
-            const glyph = PREMIUM[i] === 'star' ? '★' : '';
-            cells.push(`<div class="cell" data-action="board-cell" data-i="${i}" data-p="${PREMIUM[i]}">${glyph}${inner}</div>`);
+            const label = PREMIUM_LABEL[PREMIUM[i]] || '';
+            cells.push(`<div class="cell" data-action="board-cell" data-i="${i}" data-p="${PREMIUM[i]}">${label}${inner}</div>`);
         }
         return `<div class="board">${cells.join('')}</div>`;
     }
@@ -633,22 +825,46 @@
     function rackHtml(rack, myTurn) {
         return `<div class="rack">${rack.map((letter, slot) => {
             const usedByPending = pending.filter((p) => p.fromSlot === slot).length > 0;
+            const draggable = myTurn && !exchangeMode && !usedByPending;
             const classes = [
                 selectedRackSlot === slot ? 'selected' : '',
                 usedByPending ? 'used' : '',
                 exchangeSelection.includes(slot) ? 'exchange' : '',
                 letter === '_' ? 'blank' : ''
             ].join(' ');
-            return `<div class="tile ${classes}" data-action="rack-tile" data-slot="${slot}">${letter === '_' ? '?' : escapeHtml(letter)}<span class="pts">${letter === '_' ? '' : LETTER_VALUE[letter]}</span></div>`;
+            return `<div class="tile ${classes}" data-action="rack-tile" data-slot="${slot}" draggable="${draggable}">${letter === '_' ? '?' : escapeHtml(letter)}<span class="pts">${letter === '_' ? '' : LETTER_VALUE[letter]}</span></div>`;
         }).join('')}</div>`;
     }
 
     function lastMoveText() {
         const m = game.lastMove;
         if (!m) return '';
+        if (m.rejected) return `Stół odrzucił słowo ${escapeHtml(nameOf(m.by))} — kafelki wróciły na stojak.`;
         if (m.pass) return `${escapeHtml(nameOf(m.by))} spasował(a).`;
         if (m.exchange) return `${escapeHtml(nameOf(m.by))} wymienił(a) ${m.exchange} liter.`;
         return `${escapeHtml(nameOf(m.by))} zagrał(a) ${m.words.map(escapeHtml).join(', ')} za ${m.points} pkt.`;
+    }
+
+    /** No dictionary — this is a live, local preview of whether the tiles on the board right now
+     * would even be accepted (straight line, no gaps, touches something) using the exact same pure
+     * check `place` runs authoritatively. Purely advisory UI; the server-equivalent check in
+     * `apply()` is what actually decides. */
+    function pendingPreview() {
+        if (pending.length === 0) return null;
+        const placements = pending.map(({ i, letter, blank }) => ({ i, letter, blank }));
+        const check = computeWords(game.board, placements);
+        if (check.error === 'line') return { ok: false, text: 'Litery muszą stać w jednej linii.' };
+        if (check.error === 'gap') return { ok: false, text: 'Przerwa w słowie — kafelki muszą się stykać.' };
+        if (check.error === 'isolated') return { ok: false, text: 'Musisz dotknąć już postawionych liter (albo środka na pierwszy ruch).' };
+        const points = scoreWords(check.words, check.temp, new Set(placements.map((p) => p.i)));
+        return { ok: true, text: `${check.words.map((cells) => cells.map((i) => check.temp[i].letter).join('')).join(', ')} — ${points} pkt` };
+    }
+
+    function historyHtml() {
+        if (game.history.length === 0) return `<p class="hint small">Jeszcze nikt nic nie zagrał.</p>`;
+        return `<ul class="history">${game.history.map((h) => `
+            <li><span class="who">${escapeHtml(nameOf(h.by))}</span><span class="words">${h.words.map(escapeHtml).join(', ')}</span><span class="pts">${h.points}</span></li>
+        `).join('')}</ul>`;
     }
 
     function playingHtml() {
@@ -656,43 +872,58 @@
         const isHost = skyper.instance.isHost;
         const myTurn = game.players[game.turn] === viewerId;
         const rack = game.racks[viewerId];
-        const blankLetters = {}; // pending blank assignments, keyed by board index once picked
 
         function myLetterOf(occupied) { return occupied.letter; } // real letter already stored on board
 
-        let body = `${scoreboardHtml()}<div class="bagline"><span>Worek: ${game.bag.length}</span>${isHost ? `<button class="flatbtn" data-action="to-lobby">Powrót do lobby</button>` : ''}</div>`;
-        body += boardHtml(myLetterOf);
-        body += `<p class="lastMove">${lastMoveText()}</p>`;
+        let main = `${scoreboardHtml()}<div class="bagline"><span>Worek: ${game.bag.length}</span>${isHost ? `<button class="flatbtn" data-action="to-lobby">Powrót do lobby</button>` : ''}</div>`;
+        main += boardHtml(myLetterOf);
+        main += `<p class="lastMove">${lastMoveText()}</p>`;
+
+        const w = game.lastPlace;
+        if (w && w.by !== viewerId && game.players.includes(viewerId)) {
+            const needed = Math.ceil(game.players.length / 2);
+            const already = w.votes.includes(viewerId);
+            main += `<p class="hint">
+                <button class="flatbtn" data-action="reject" ${already ? 'disabled' : ''}>${already ? 'Zgłoszono' : 'Zakwestionuj ostatnie słowo'}</button>
+                <span class="small"> ${w.votes.length}/${needed} głosów</span>
+            </p>`;
+        } else if (w && w.votes.length > 0) {
+            main += `<p class="hint small">${w.votes.length}/${Math.ceil(game.players.length / 2)} głosów za odrzuceniem</p>`;
+        }
 
         if (blankPickerFor !== null) {
-            body += `<div class="picker">${ALPHABET.map((l) => `<button data-action="pick-blank-letter" data-letter="${l}">${l}</button>`).join('')}</div>`;
+            main += `<div class="picker">${ALPHABET.map((l) => `<button data-action="pick-blank-letter" data-letter="${l}">${l}</button>`).join('')}</div>`;
         }
 
         if (rack) {
-            body += `<div class="rackRow">${rackHtml(rack, myTurn)}`;
+            main += `<div class="rackRow">${rackHtml(rack, myTurn)}`;
             if (myTurn) {
                 if (exchangeMode) {
-                    body += `<div class="actions">
+                    main += `<div class="actions">
                         <button class="flatbtn primary" data-action="confirm-exchange" ${exchangeSelection.length ? '' : 'disabled'}>Wymień zaznaczone (${exchangeSelection.length})</button>
                         <button class="flatbtn" data-action="cancel-exchange">Anuluj</button>
                     </div>`;
                 } else {
-                    body += `<div class="actions">
-                        <button class="flatbtn primary" data-action="confirm-place" ${pending.length ? '' : 'disabled'}>Zagraj słowo</button>
+                    const preview = pendingPreview();
+                    if (preview) main += `<p class="preview" data-ok="${preview.ok}">${escapeHtml(preview.text)}</p>`;
+                    main += `<div class="actions">
+                        <button class="flatbtn primary" data-action="confirm-place" ${pending.length && (!preview || preview.ok) ? '' : 'disabled'}>Zagraj słowo</button>
                         <button class="flatbtn" data-action="clear-pending" ${pending.length ? '' : 'disabled'}>Cofnij</button>
                         <button class="flatbtn" data-action="start-exchange">Wymień litery</button>
                         <button class="flatbtn" data-action="pass">Pas</button>
                     </div>`;
                 }
             } else {
-                body += `<p class="hint">Kolej: ${escapeHtml(nameOf(game.players[game.turn]))}</p>`;
+                main += `<p class="hint">Kolej: ${escapeHtml(nameOf(game.players[game.turn]))}</p>`;
             }
-            body += `</div>`;
+            main += `</div>`;
         } else {
-            body += `<p class="hint">Obserwujesz — kolej: ${escapeHtml(nameOf(game.players[game.turn]))}</p>`;
+            main += `<p class="hint">Obserwujesz — kolej: ${escapeHtml(nameOf(game.players[game.turn]))}</p>`;
         }
 
-        return `<div class="card">${body}</div>`;
+        const side = `<aside class="card historyPanel"><h2>Ostatnie słowa</h2>${historyHtml()}</aside>`;
+
+        return `<div class="playArea"><div class="card mainCol">${main}</div>${side}</div>`;
     }
 
     function overHtml(isHost) {
@@ -732,7 +963,7 @@
         if (!el) return;
         const action = el.dataset.action;
 
-        if (action === 'enter-app') { uiStage = 'app'; render(); return; }
+        if (action === 'enter-app') { uiStage = 'app'; startSound(); render(); return; }
 
         if (action === 'toggle-player') {
             const id = el.dataset.id;
@@ -765,7 +996,7 @@
                 return;
             }
 
-            if (rack[slot] === '_') { blankPickerFor = slot; render(); return; }
+            if (rack[slot] === '_') { blankPickerFor = slot; blankPickerTarget = null; render(); return; }
             selectedRackSlot = selectedRackSlot === slot ? null : slot;
             render();
             return;
@@ -773,9 +1004,18 @@
 
         if (action === 'pick-blank-letter') {
             if (blankPickerFor === null) return;
-            selectedRackSlot = blankPickerFor;
-            blankPickerFor = null;
-            pendingBlankLetter = el.dataset.letter;
+            const slot = blankPickerFor, target = blankPickerTarget, letter = el.dataset.letter;
+            blankPickerFor = null; blankPickerTarget = null;
+
+            if (target !== null) {
+                // Came from a drag-and-drop: the cell is already known, so placing happens right away.
+                if (!game.board[target] && !pending.some((p) => p.i === target)) {
+                    pending.push({ i: target, letter, blank: true, fromSlot: slot });
+                }
+            } else {
+                selectedRackSlot = slot;
+                pendingBlankLetter = letter;
+            }
             render();
             return;
         }
@@ -815,7 +1055,57 @@
             skyper.send({ t: 'exchange', letters });
             return;
         }
+
+        if (action === 'reject') { skyper.send({ t: 'reject' }); return; }
     });
+
+    // ─── Drag-and-drop — an alternative to click-to-select, same end result either way ────────
+    // Kept off `render()` while dragging: rebuilding the DOM mid-drag would tear down the very
+    // element the browser is dragging and silently cancel the operation.
+
+    root.addEventListener('dragstart', (event) => {
+        const el = event.target.closest('[data-action="rack-tile"]');
+        if (!el || el.getAttribute('draggable') !== 'true') { event.preventDefault(); return; }
+        draggingSlot = Number(el.dataset.slot);
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', String(draggingSlot)); // required by Firefox to allow the drop
+        }
+    });
+
+    root.addEventListener('dragover', (event) => {
+        if (draggingSlot === null) return;
+        const cell = event.target.closest('[data-action="board-cell"]');
+        if (!cell) return;
+        const i = Number(cell.dataset.i);
+        if (game.board[i] || pending.some((p) => p.i === i)) return;
+        event.preventDefault();
+        cell.classList.add('dragover');
+    });
+
+    root.addEventListener('dragleave', (event) => {
+        const cell = event.target.closest('[data-action="board-cell"]');
+        if (cell) cell.classList.remove('dragover');
+    });
+
+    root.addEventListener('drop', (event) => {
+        const cell = event.target.closest('[data-action="board-cell"]');
+        if (cell) { event.preventDefault(); cell.classList.remove('dragover'); }
+        if (draggingSlot === null || !cell) { draggingSlot = null; return; }
+
+        const i = Number(cell.dataset.i);
+        const slot = draggingSlot;
+        draggingSlot = null;
+        if (game.board[i] || pending.some((p) => p.i === i)) return;
+
+        const rack = game.racks[skyper.instance.viewerId];
+        const raw = rack[slot];
+        if (raw === '_') { blankPickerFor = slot; blankPickerTarget = i; }
+        else pending.push({ i, letter: raw, blank: false, fromSlot: slot });
+        render();
+    });
+
+    root.addEventListener('dragend', () => { draggingSlot = null; });
 
     let pendingBlankLetter = null;
 
