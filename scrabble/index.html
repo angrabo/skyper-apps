@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrabble</title>
+<style>
+    /*
+     * Backend-free Scrabble on the Skyper activity platform. Same model as tic-tac-toe: every
+     * action is a relay message applied identically and deterministically on every page; the host
+     * checkpoints the snapshot.
+     *
+     * The one piece of real randomness — the shuffled bag — is rolled once by the host at `start`
+     * and sent whole. Every draw after that (initial deal, post-move refill, an exchange's redraw)
+     * is just popping off the front of that same array, so no further host-authoritative moment is
+     * ever needed mid-game. An exchange pushes the returned tiles to the *back* of the bag rather
+     * than reshuffling — indistinguishable in fairness from a fresh shuffle, since the front of the
+     * bag was already random and the returned tiles can't be redrawn until it's worked through.
+     *
+     * Worth knowing before touching this: the relay has no private channel and the snapshot is
+     * handed to every page verbatim (see skyper-activity.js) — there is no server standing between
+     * participants filtering what each one may see. Racks and the bag are real data in `game`, sent
+     * to everybody; a rack showing only tile *counts* for other players is a UI choice, not a
+     * security boundary. Fine for a casual game among friends; worth saying out loud once.
+     */
+    :root {
+        --paper: #efe6d3;
+        --paper-dark: #e2d6ba;
+        --ink: #2c2a25;
+        --muted: #6f6857;
+        --line: #c9bda0;
+        --tile: #f3e9cf;
+        --tile-ink: #1f4d47;
+        --dl: #bcd4d8;
+        --tl: #4f8fa6;
+        --dw: #e3c2b0;
+        --tw: #b5432f;
+        --accent: #b5432f;
+        --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+        margin: 0;
+        min-height: 100%;
+        background: #1b1712;
+        color: var(--ink);
+        font: 14px/1.4 Georgia, "Times New Roman", serif;
+        user-select: none;
+    }
+
+    body {
+        /* A flat colour multiplied over the photo dims it without a gradient function. */
+        background-image: url('https://plus.unsplash.com/premium_photo-1672944876342-4090164e1c04?fm=jpg&q=60&w=1600&auto=format&fit=crop');
+        background-color: rgba(10, 8, 6, .6);
+        background-blend-mode: multiply;
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+    }
+
+    button { font: inherit; }
+
+    /* ─── Header ──────────────────────────────────────────────────────────── */
+
+    .topbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: var(--paper);
+        border-bottom: 2px solid var(--ink);
+    }
+    .topbar .word { font-weight: 700; letter-spacing: .08em; font-size: 14px; }
+    .topbar .grow { flex: 1; }
+    .topbar .phase { color: var(--muted); font-size: 12px; }
+
+    .flatbtn {
+        padding: 7px 14px;
+        background: var(--paper);
+        border: 2px solid var(--ink);
+        border-radius: var(--radius);
+        color: var(--ink);
+        cursor: pointer;
+        font-weight: 600;
+    }
+    .flatbtn:hover:not(:disabled) { background: var(--paper-dark); }
+    .flatbtn:disabled { opacity: .4; cursor: default; }
+    .flatbtn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .flatbtn.primary:hover:not(:disabled) { background: #9c3a29; }
+
+    /* ─── Shared screen shell ─────────────────────────────────────────────── */
+
+    .screen {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 16px 14px 32px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .card {
+        background: var(--paper);
+        border: 2px solid var(--ink);
+        border-radius: var(--radius);
+        padding: 16px;
+        width: 100%;
+    }
+
+    h2 { margin: 0 0 6px; font-size: 17px; }
+    .hint { color: var(--muted); text-align: center; margin: 6px 0 0; font-size: 13px; }
+
+    /* ─── Splash ──────────────────────────────────────────────────────────── */
+
+    .splash {
+        min-height: 88vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        text-align: center;
+        padding: 20px;
+    }
+    .splash .tiles { display: flex; gap: 6px; }
+    .splash .tiles .tile { width: 42px; height: 42px; font-size: 20px; }
+    .splash p { color: #efe6d3; margin: 0; max-width: 340px; }
+
+    /* ─── Tiles (shared by rack + board) ─────────────────────────────────── */
+
+    .tile {
+        background: var(--tile);
+        border: 1px solid #ad9c76;
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        position: relative;
+        font-weight: 700;
+        color: var(--tile-ink);
+        cursor: default;
+    }
+    .tile .pts {
+        position: absolute;
+        bottom: 1px;
+        right: 3px;
+        font-size: 8px;
+        font-weight: 600;
+    }
+    .tile.pending { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .tile.selected { outline: 2px solid var(--tile-ink); outline-offset: -2px; }
+    .tile.blank { color: #8a7f5f; }
+
+    /* ─── Lobby ───────────────────────────────────────────────────────────── */
+
+    .people { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+    .person {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        cursor: pointer;
+    }
+    .person[data-in] { background: var(--dw); border-color: var(--ink); }
+    .person .avatar {
+        width: 22px; height: 22px; border-radius: 50%;
+        display: grid; place-items: center; font-size: 11px; font-weight: 700; color: #fff;
+    }
+    .person .crown { color: var(--accent); font-size: 12px; }
+    .person .tag { font-size: 10px; color: var(--muted); }
+
+    /* ─── Play area ───────────────────────────────────────────────────────── */
+
+    .scoreboard { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+    .scoreCard {
+        flex: 1 1 140px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+    }
+    .scoreCard[data-turn] { border-color: var(--accent); border-width: 2px; }
+    .scoreCard .who { display: flex; align-items: center; gap: 4px; font-weight: 700; font-size: 12px; }
+    .scoreCard .pts { font-size: 20px; font-weight: 700; }
+    .scoreCard .backs { display: flex; gap: 2px; }
+    .scoreCard .back { width: 10px; height: 13px; background: var(--tile-ink); border-radius: 2px; opacity: .7; }
+
+    .bagline { display: flex; justify-content: space-between; width: 100%; color: var(--muted); font-size: 12px; }
+
+    .board {
+        display: grid;
+        grid-template-columns: repeat(15, 1fr);
+        gap: 2px;
+        width: min(94vmin, 560px);
+        aspect-ratio: 1;
+        background: #23392f;
+        padding: 4px;
+        border-radius: 6px;
+    }
+    .cell {
+        display: grid;
+        place-items: center;
+        background: var(--tile);
+        border-radius: 2px;
+        font-size: 9px;
+        font-weight: 700;
+        color: rgba(44, 42, 37, .55);
+        cursor: pointer;
+        position: relative;
+    }
+    .cell[data-p="dl"] { background: var(--dl); }
+    .cell[data-p="tl"] { background: var(--tl); color: #fff; }
+    .cell[data-p="dw"] { background: var(--dw); }
+    .cell[data-p="tw"] { background: var(--tw); color: #fff; }
+    .cell[data-p="star"] { background: var(--dw); font-size: 14px; }
+    .cell .tile { position: absolute; inset: 0; border-radius: 2px; font-size: clamp(9px, 2.4vmin, 15px); }
+    .cell .tile .pts { font-size: 6px; }
+
+    .rackRow { display: flex; flex-direction: column; gap: 8px; align-items: center; width: 100%; }
+    .rack { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+    .rack .tile { width: 40px; height: 40px; font-size: 19px; cursor: pointer; }
+    .rack .tile.used { opacity: .25; cursor: default; }
+    .rack .tile.exchange { outline: 2px solid var(--tw); outline-offset: -2px; }
+
+    .picker { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+    .picker button {
+        width: 26px; height: 26px; border: 1px solid var(--line); background: var(--tile); color: var(--tile-ink);
+        border-radius: 4px; font-weight: 700; cursor: pointer;
+    }
+
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+    .lastMove { text-align: center; color: var(--muted); font-size: 12px; min-height: 1.2em; }
+
+    /* ─── Results ─────────────────────────────────────────────────────────── */
+
+    .results { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+    .resultRow { display: flex; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .resultRow[data-winner] { border-color: var(--accent); border-width: 2px; font-weight: 700; }
+</style>
+</head>
+<body>
+    <div id="root"></div>
+
+<script src="../sdk/skyper-activity.js"></script>
+<script>
+(async () => {
+    'use strict';
+
+    const skyper = await SkyperActivity.connect();
+
+    // ─── Polish tile set — 100 tiles, values and counts per the official distribution ─────────
+
+    const LETTER_COUNT = {
+        A: 9, Ą: 1, B: 2, C: 3, Ć: 1, D: 3, E: 7, Ę: 1, F: 1, G: 2, H: 2, I: 8, J: 2, K: 3, L: 3,
+        Ł: 2, M: 3, N: 5, Ń: 1, O: 6, Ó: 1, P: 3, R: 4, S: 4, Ś: 1, T: 3, U: 2, W: 4, Y: 4, Z: 5,
+        Ź: 1, Ż: 1, _: 2
+    };
+    const LETTER_VALUE = {
+        A: 1, Ą: 5, B: 3, C: 2, Ć: 6, D: 2, E: 1, Ę: 5, F: 5, G: 3, H: 3, I: 1, J: 3, K: 2, L: 2,
+        Ł: 3, M: 2, N: 1, Ń: 7, O: 1, Ó: 5, P: 2, R: 1, S: 1, Ś: 5, T: 2, U: 3, W: 1, Y: 2, Z: 1,
+        Ź: 9, Ż: 5, _: 0
+    };
+    const ALPHABET = Object.keys(LETTER_COUNT).filter((l) => l !== '_');
+
+    function buildFullBag() {
+        const bag = [];
+        for (const [letter, count] of Object.entries(LETTER_COUNT)) for (let i = 0; i < count; i++) bag.push(letter);
+        return bag;
+    }
+
+    function shuffle(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    }
+
+    // ─── Board layout — the standard 15×15 premium-square pattern ─────────────────────────────
+
+    const TW = [[0,0],[0,7],[0,14],[7,0],[7,14],[14,0],[14,7],[14,14]];
+    const DW = [[1,1],[2,2],[3,3],[4,4],[1,13],[2,12],[3,11],[4,10],[13,1],[12,2],[11,3],[10,4],[13,13],[12,12],[11,11],[10,10]];
+    const TL = [[1,5],[1,9],[5,1],[5,5],[5,9],[5,13],[9,1],[9,5],[9,9],[9,13],[13,5],[13,9]];
+    const DL = [[0,3],[0,11],[2,6],[2,8],[3,0],[3,7],[3,14],[6,2],[6,6],[6,8],[6,12],[7,3],[7,11],[8,2],[8,6],[8,8],[8,12],[11,0],[11,7],[11,14],[12,6],[12,8],[14,3],[14,11]];
+
+    const PREMIUM = Array(225).fill('');
+    TW.forEach(([r, c]) => { PREMIUM[r * 15 + c] = 'tw'; });
+    DW.forEach(([r, c]) => { PREMIUM[r * 15 + c] = 'dw'; });
+    TL.forEach(([r, c]) => { PREMIUM[r * 15 + c] = 'tl'; });
+    DL.forEach(([r, c]) => { PREMIUM[r * 15 + c] = 'dl'; });
+    PREMIUM[112] = 'star';
+
+    function idx(r, c) { return r * 15 + c; }
+    function rc(i) { return [Math.floor(i / 15), i % 15]; }
+
+    // ─── Pure word-finding + scoring — identical result on every page ─────────────────────────
+
+    function wordAt(board, i, dir) {
+        const [r0, c0] = rc(i);
+        const back = dir === 'h' ? [0, -1] : [-1, 0];
+        const fwd = dir === 'h' ? [0, 1] : [1, 0];
+        let r = r0, c = c0;
+        while (r + back[0] >= 0 && r + back[0] <= 14 && c + back[1] >= 0 && c + back[1] <= 14 && board[idx(r + back[0], c + back[1])]) {
+            r += back[0]; c += back[1];
+        }
+        const cells = [];
+        while (r >= 0 && r <= 14 && c >= 0 && c <= 14 && board[idx(r, c)]) {
+            cells.push(idx(r, c));
+            r += fwd[0]; c += fwd[1];
+        }
+        return cells;
+    }
+
+    /** Validates a placement (straight line, no gaps, connects to the board) and returns every
+     * word it forms. Connectivity needs no separate check: a word list that comes back non-empty
+     * already proves it — either a formed word touches something on the board, or this is the
+     * one legitimate case where it can't (the very first move). */
+    function computeWords(board, placements) {
+        const idxs = placements.map((p) => p.i);
+        const positions = idxs.map(rc);
+        const rows = new Set(positions.map(([r]) => r));
+        const cols = new Set(positions.map(([, c]) => c));
+
+        let mainDir = null;
+        if (placements.length > 1) {
+            if (rows.size === 1) mainDir = 'h';
+            else if (cols.size === 1) mainDir = 'v';
+            else return { error: 'line' };
+        }
+
+        const temp = board.slice();
+        for (const p of placements) temp[p.i] = { letter: p.letter, blank: Boolean(p.blank) };
+
+        if (mainDir === 'h') {
+            const row = positions[0][0];
+            const lo = Math.min(...positions.map(([, c]) => c)), hi = Math.max(...positions.map(([, c]) => c));
+            for (let c = lo; c <= hi; c++) if (!temp[idx(row, c)]) return { error: 'gap' };
+        } else if (mainDir === 'v') {
+            const col = positions[0][1];
+            const lo = Math.min(...positions.map(([r]) => r)), hi = Math.max(...positions.map(([r]) => r));
+            for (let r = lo; r <= hi; r++) if (!temp[idx(r, col)]) return { error: 'gap' };
+        }
+
+        const words = [];
+        const seen = new Set();
+        function addWord(cells) {
+            if (cells.length < 2) return;
+            const key = cells.join(',');
+            if (seen.has(key)) return;
+            seen.add(key);
+            words.push(cells);
+        }
+
+        if (mainDir) addWord(wordAt(temp, placements[0].i, mainDir));
+        for (const p of placements) { addWord(wordAt(temp, p.i, 'h')); addWord(wordAt(temp, p.i, 'v')); }
+
+        if (words.length === 0) {
+            if (board.every((c) => !c) && placements.length === 1) words.push([placements[0].i]);
+            else return { error: 'isolated' };
+        }
+
+        return { words, temp };
+    }
+
+    function scoreWords(words, temp, freshIdx) {
+        let total = 0;
+        for (const cells of words) {
+            let wordScore = 0, wordMult = 1;
+            for (const i of cells) {
+                const tile = temp[i];
+                const base = tile.blank ? 0 : LETTER_VALUE[tile.letter];
+                if (freshIdx.has(i)) {
+                    const prem = PREMIUM[i];
+                    if (prem === 'dl') wordScore += base * 2;
+                    else if (prem === 'tl') wordScore += base * 3;
+                    else wordScore += base;
+                    if (prem === 'dw' || prem === 'star') wordMult *= 2;
+                    else if (prem === 'tw') wordMult *= 3;
+                } else {
+                    wordScore += base;
+                }
+            }
+            total += wordScore * wordMult;
+        }
+        if (freshIdx.size === 7) total += 50; // bingo — all seven tiles in one turn
+        return total;
+    }
+
+    function canAfford(rack, placements) {
+        const need = {};
+        for (const p of placements) { const t = p.blank ? '_' : p.letter; need[t] = (need[t] || 0) + 1; }
+        const have = {};
+        for (const t of rack) have[t] = (have[t] || 0) + 1;
+        return Object.entries(need).every(([t, n]) => (have[t] || 0) >= n);
+    }
+
+    function removeFromRack(rack, placements) {
+        const copy = rack.slice();
+        for (const p of placements) copy.splice(copy.indexOf(p.blank ? '_' : p.letter), 1);
+        return copy;
+    }
+
+    function draw(bag, rack, n) { return rack.concat(bag.splice(0, Math.min(n, bag.length))); }
+    function rackValue(rack) { return rack.reduce((s, l) => s + LETTER_VALUE[l], 0); }
+
+    // ─── Shared, deterministic game state ──────────────────────────────────────────────────────
+
+    function freshGame() {
+        return {
+            phase: 'lobby', players: [], turn: 0, board: Array(225).fill(null),
+            racks: {}, bag: [], scores: {}, passStreak: 0, lastMove: null, finished: false
+        };
+    }
+
+    function finishGame(reason) {
+        game.phase = 'over';
+        game.finished = true;
+        if (reason === 'empty') {
+            const emptyPlayer = game.players.find((id) => game.racks[id].length === 0);
+            let bonus = 0;
+            for (const id of game.players) {
+                if (id === emptyPlayer) continue;
+                const val = rackValue(game.racks[id]);
+                game.scores[id] -= val;
+                bonus += val;
+            }
+            game.scores[emptyPlayer] += bonus;
+        } else {
+            for (const id of game.players) game.scores[id] -= rackValue(game.racks[id]);
+        }
+    }
+
+    function bumpTurnOrEnd() {
+        if (game.passStreak >= game.players.length * 2) finishGame('passed');
+        else game.turn = (game.turn + 1) % game.players.length;
+    }
+
+    function apply(senderId, action) {
+        switch (action.t) {
+            case 'start': {
+                if (senderId !== skyper.instance.hostId || game.phase !== 'lobby') return;
+                const players = Array.isArray(action.players) ? action.players.filter((id) => typeof id === 'string') : [];
+                if (players.length < 2 || players.length > 4) return;
+                if (!action.racks || !Array.isArray(action.bag)) return;
+
+                game = freshGame();
+                game.phase = 'playing';
+                game.players = players;
+                game.racks = action.racks;
+                game.bag = action.bag;
+                game.scores = Object.fromEntries(players.map((id) => [id, 0]));
+                return;
+            }
+
+            case 'place': {
+                if (game.phase !== 'playing' || senderId !== game.players[game.turn]) return;
+                const placements = Array.isArray(action.cells) ? action.cells : [];
+                if (placements.length === 0 || placements.length > 7) return;
+                if (placements.some((p) => typeof p.i !== 'number' || p.i < 0 || p.i > 224 || game.board[p.i] ||
+                    typeof p.letter !== 'string' || !ALPHABET.includes(p.letter))) return;
+                if (new Set(placements.map((p) => p.i)).size !== placements.length) return;
+                if (!canAfford(game.racks[senderId], placements)) return;
+
+                const check = computeWords(game.board, placements);
+                if (check.error) return;
+
+                const freshIdx = new Set(placements.map((p) => p.i));
+                const points = scoreWords(check.words, check.temp, freshIdx);
+
+                game.board = check.temp;
+                game.racks[senderId] = draw(game.bag, removeFromRack(game.racks[senderId], placements), placements.length);
+                game.scores[senderId] += points;
+                game.passStreak = 0;
+                game.lastMove = { by: senderId, points, words: check.words.map((cells) => cells.map((i) => game.board[i].letter).join('')) };
+
+                if (game.bag.length === 0 && game.racks[senderId].length === 0) finishGame('empty');
+                else game.turn = (game.turn + 1) % game.players.length;
+                return;
+            }
+
+            case 'exchange': {
+                if (game.phase !== 'playing' || senderId !== game.players[game.turn]) return;
+                const letters = Array.isArray(action.letters) ? action.letters : [];
+                if (letters.length === 0 || letters.length > game.bag.length) return;
+
+                const rack = game.racks[senderId].slice();
+                for (const l of letters) {
+                    const at = rack.indexOf(l);
+                    if (at === -1) return;
+                    rack.splice(at, 1);
+                }
+                const drawn = game.bag.splice(0, letters.length);
+                game.bag.push(...letters);
+                game.racks[senderId] = rack.concat(drawn);
+                game.passStreak++;
+                game.lastMove = { by: senderId, exchange: letters.length };
+                bumpTurnOrEnd();
+                return;
+            }
+
+            case 'pass': {
+                if (game.phase !== 'playing' || senderId !== game.players[game.turn]) return;
+                game.passStreak++;
+                game.lastMove = { by: senderId, pass: true };
+                bumpTurnOrEnd();
+                return;
+            }
+
+            case 'toLobby': {
+                if (senderId !== skyper.instance.hostId) return;
+                game = freshGame();
+                return;
+            }
+        }
+    }
+
+    // ─── Wiring ────────────────────────────────────────────────────────────────────────────
+
+    let game = (skyper.state && skyper.state.phase) ? skyper.state : freshGame();
+    let uiStage = 'splash';
+
+    // Local-only: tiles picked up from the rack but not yet sent. Never shared — a half-built
+    // word is nobody's business but the player building it, and it costs nothing to keep local
+    // since the authoritative `place` message carries the finished result in one shot.
+    let pending = [];
+    let selectedRackSlot = null;
+    let blankPickerFor = null; // rack slot index awaiting a letter choice
+    let exchangeMode = false;
+    let exchangeSelection = [];
+
+    skyper.on('message', (senderId, action) => {
+        apply(senderId, action);
+        if (skyper.instance.isHost) skyper.setState(game);
+        pending = []; selectedRackSlot = null; blankPickerFor = null;
+        render();
+    });
+
+    skyper.on('session', render);
+
+    // ─── Rendering ─────────────────────────────────────────────────────────────────────────
+
+    const root = document.getElementById('root');
+
+    function escapeHtml(text) {
+        const span = document.createElement('span');
+        span.textContent = text;
+        return span.innerHTML;
+    }
+
+    function nameOf(id) {
+        const p = skyper.instance.people.find((p) => p.id === id);
+        return p ? p.name : 'ktoś';
+    }
+
+    function hashHue(id) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0; return h % 360; }
+    function avatarHtml(id) {
+        return `<span class="avatar" style="background:hsl(${hashHue(id)} 55% 40%)">${escapeHtml(nameOf(id).slice(0, 1).toUpperCase())}</span>`;
+    }
+
+    function tileHtml(letter, extraClass) {
+        const shown = letter === '_' ? '' : letter;
+        const pts = letter === '_' ? '' : LETTER_VALUE[letter];
+        return `<div class="tile ${extraClass || ''}">${escapeHtml(shown)}<span class="pts">${pts}</span></div>`;
+    }
+
+    function headerHtml() {
+        const label = game.phase === 'lobby' ? 'Lobby' : game.phase === 'playing' ? 'Rozgrywka' : 'Koniec gry';
+        return `<div class="topbar"><span class="word">SCRABBLE</span><span class="grow"></span><span class="phase">${label}</span></div>`;
+    }
+
+    function splashHtml() {
+        return `
+            <div class="splash">
+                <div class="tiles">${['S', 'C', 'R', 'A', 'B'].map((l) => tileHtml(l)).join('')}</div>
+                <p>Klasyczne układanie słów — dla 2 do 4 graczy, reszta ogląda.</p>
+                <button class="flatbtn primary" data-action="enter-app">Dołącz</button>
+            </div>
+        `;
+    }
+
+    function lobbyHtml(isHost) {
+        const people = skyper.instance.people;
+        const list = people.map((p) => `
+            <li class="person" data-action="toggle-player" data-id="${p.id}" ${selectedPlayers.includes(p.id) ? 'data-in' : ''}>
+                ${avatarHtml(p.id)}
+                <span>${escapeHtml(p.name)}</span>
+                ${p.id === skyper.instance.hostId ? '<span class="crown">♛</span>' : ''}
+                <span class="tag">${selectedPlayers.includes(p.id) ? 'gracz' : 'obserwator'}</span>
+            </li>
+        `).join('');
+
+        const controls = isHost ? `
+            <p class="hint">Kliknij osoby, które grają (2–4). Reszta ogląda.</p>
+            <button class="flatbtn primary" data-action="start" ${selectedPlayers.length >= 2 && selectedPlayers.length <= 4 ? '' : 'disabled'}>Rozpocznij grę</button>
+        ` : `<p class="hint">Gospodarz ${escapeHtml(nameOf(skyper.instance.hostId))} przygotowuje grę…</p>`;
+
+        return `<div class="card"><h2>Lobby</h2><ul class="people">${list}</ul>${controls}</div>`;
+    }
+
+    function scoreboardHtml() {
+        return `<div class="scoreboard">${game.players.map((id) => `
+            <div class="scoreCard" ${id === game.players[game.turn] ? 'data-turn' : ''}>
+                <span class="who">${avatarHtml(id)} ${escapeHtml(nameOf(id))}${id === skyper.instance.hostId ? ' ♛' : ''}</span>
+                <span class="pts">${game.scores[id]}</span>
+                <span class="backs">${game.racks[id] ? game.racks[id].map(() => '<span class="back"></span>').join('') : ''}</span>
+            </div>
+        `).join('')}</div>`;
+    }
+
+    function boardHtml(myLetterOf) {
+        const cells = [];
+        for (let i = 0; i < 225; i++) {
+            const pend = pending.find((p) => p.i === i);
+            const occupied = game.board[i];
+            let inner = '';
+            if (occupied) inner = tileHtml(occupied.blank ? myLetterOf(occupied) : occupied.letter, occupied.blank ? 'blank' : '');
+            else if (pend) inner = tileHtml(pend.letter, `pending ${pend.blank ? 'blank' : ''}`);
+            const glyph = PREMIUM[i] === 'star' ? '★' : '';
+            cells.push(`<div class="cell" data-action="board-cell" data-i="${i}" data-p="${PREMIUM[i]}">${glyph}${inner}</div>`);
+        }
+        return `<div class="board">${cells.join('')}</div>`;
+    }
+
+    function rackHtml(rack, myTurn) {
+        return `<div class="rack">${rack.map((letter, slot) => {
+            const usedByPending = pending.filter((p) => p.fromSlot === slot).length > 0;
+            const classes = [
+                selectedRackSlot === slot ? 'selected' : '',
+                usedByPending ? 'used' : '',
+                exchangeSelection.includes(slot) ? 'exchange' : '',
+                letter === '_' ? 'blank' : ''
+            ].join(' ');
+            return `<div class="tile ${classes}" data-action="rack-tile" data-slot="${slot}">${letter === '_' ? '?' : escapeHtml(letter)}<span class="pts">${letter === '_' ? '' : LETTER_VALUE[letter]}</span></div>`;
+        }).join('')}</div>`;
+    }
+
+    function lastMoveText() {
+        const m = game.lastMove;
+        if (!m) return '';
+        if (m.pass) return `${escapeHtml(nameOf(m.by))} spasował(a).`;
+        if (m.exchange) return `${escapeHtml(nameOf(m.by))} wymienił(a) ${m.exchange} liter.`;
+        return `${escapeHtml(nameOf(m.by))} zagrał(a) ${m.words.map(escapeHtml).join(', ')} za ${m.points} pkt.`;
+    }
+
+    function playingHtml() {
+        const viewerId = skyper.instance.viewerId;
+        const isHost = skyper.instance.isHost;
+        const myTurn = game.players[game.turn] === viewerId;
+        const rack = game.racks[viewerId];
+        const blankLetters = {}; // pending blank assignments, keyed by board index once picked
+
+        function myLetterOf(occupied) { return occupied.letter; } // real letter already stored on board
+
+        let body = `${scoreboardHtml()}<div class="bagline"><span>Worek: ${game.bag.length}</span>${isHost ? `<button class="flatbtn" data-action="to-lobby">Powrót do lobby</button>` : ''}</div>`;
+        body += boardHtml(myLetterOf);
+        body += `<p class="lastMove">${lastMoveText()}</p>`;
+
+        if (blankPickerFor !== null) {
+            body += `<div class="picker">${ALPHABET.map((l) => `<button data-action="pick-blank-letter" data-letter="${l}">${l}</button>`).join('')}</div>`;
+        }
+
+        if (rack) {
+            body += `<div class="rackRow">${rackHtml(rack, myTurn)}`;
+            if (myTurn) {
+                if (exchangeMode) {
+                    body += `<div class="actions">
+                        <button class="flatbtn primary" data-action="confirm-exchange" ${exchangeSelection.length ? '' : 'disabled'}>Wymień zaznaczone (${exchangeSelection.length})</button>
+                        <button class="flatbtn" data-action="cancel-exchange">Anuluj</button>
+                    </div>`;
+                } else {
+                    body += `<div class="actions">
+                        <button class="flatbtn primary" data-action="confirm-place" ${pending.length ? '' : 'disabled'}>Zagraj słowo</button>
+                        <button class="flatbtn" data-action="clear-pending" ${pending.length ? '' : 'disabled'}>Cofnij</button>
+                        <button class="flatbtn" data-action="start-exchange">Wymień litery</button>
+                        <button class="flatbtn" data-action="pass">Pas</button>
+                    </div>`;
+                }
+            } else {
+                body += `<p class="hint">Kolej: ${escapeHtml(nameOf(game.players[game.turn]))}</p>`;
+            }
+            body += `</div>`;
+        } else {
+            body += `<p class="hint">Obserwujesz — kolej: ${escapeHtml(nameOf(game.players[game.turn]))}</p>`;
+        }
+
+        return `<div class="card">${body}</div>`;
+    }
+
+    function overHtml(isHost) {
+        const ranked = game.players.slice().sort((a, b) => game.scores[b] - game.scores[a]);
+        const top = game.scores[ranked[0]];
+        return `<div class="card">
+            <h2>Koniec gry</h2>
+            <div class="results">${ranked.map((id) => `
+                <div class="resultRow" ${game.scores[id] === top ? 'data-winner' : ''}>
+                    <span>${avatarHtml(id)} ${escapeHtml(nameOf(id))}${game.scores[id] === top ? ' 🏆' : ''}</span>
+                    <span>${game.scores[id]}</span>
+                </div>
+            `).join('')}</div>
+            ${isHost ? `<button class="flatbtn primary" data-action="to-lobby">Powrót do lobby</button>` : ''}
+        </div>`;
+    }
+
+    // Host-local: who they've picked as players, before `start` is sent.
+    let selectedPlayers = [];
+
+    function render() {
+        if (uiStage === 'splash') { root.innerHTML = splashHtml(); return; }
+
+        const isHost = skyper.instance.isHost;
+        let body = '';
+        if (game.phase === 'lobby') body = lobbyHtml(isHost);
+        else if (game.phase === 'playing') body = playingHtml();
+        else if (game.phase === 'over') body = overHtml(isHost);
+
+        root.innerHTML = `${headerHtml()}<div class="screen">${body}</div>`;
+    }
+
+    // ─── Interaction ───────────────────────────────────────────────────────────────────────
+
+    root.addEventListener('click', (event) => {
+        const el = event.target.closest('[data-action]');
+        if (!el) return;
+        const action = el.dataset.action;
+
+        if (action === 'enter-app') { uiStage = 'app'; render(); return; }
+
+        if (action === 'toggle-player') {
+            const id = el.dataset.id;
+            const at = selectedPlayers.indexOf(id);
+            if (at !== -1) selectedPlayers.splice(at, 1);
+            else if (selectedPlayers.length < 4) selectedPlayers.push(id);
+            render();
+            return;
+        }
+
+        if (action === 'start') {
+            const bag = shuffle(buildFullBag());
+            const racks = {};
+            for (const id of selectedPlayers) racks[id] = bag.splice(0, 7);
+            skyper.send({ t: 'start', players: selectedPlayers, racks, bag });
+            return;
+        }
+
+        if (action === 'to-lobby') { selectedPlayers = []; skyper.send({ t: 'toLobby' }); return; }
+
+        if (action === 'rack-tile') {
+            const slot = Number(el.dataset.slot);
+            const rack = game.racks[skyper.instance.viewerId];
+            if (pending.some((p) => p.fromSlot === slot)) return; // already placed this turn
+
+            if (exchangeMode) {
+                const at = exchangeSelection.indexOf(slot);
+                if (at !== -1) exchangeSelection.splice(at, 1); else exchangeSelection.push(slot);
+                render();
+                return;
+            }
+
+            if (rack[slot] === '_') { blankPickerFor = slot; render(); return; }
+            selectedRackSlot = selectedRackSlot === slot ? null : slot;
+            render();
+            return;
+        }
+
+        if (action === 'pick-blank-letter') {
+            if (blankPickerFor === null) return;
+            selectedRackSlot = blankPickerFor;
+            blankPickerFor = null;
+            pendingBlankLetter = el.dataset.letter;
+            render();
+            return;
+        }
+
+        if (action === 'board-cell') {
+            const i = Number(el.dataset.i);
+            const already = pending.findIndex((p) => p.i === i);
+            if (already !== -1) { pending.splice(already, 1); render(); return; }
+
+            if (selectedRackSlot === null || game.board[i]) return;
+            const rack = game.racks[skyper.instance.viewerId];
+            const raw = rack[selectedRackSlot];
+            const isBlank = raw === '_';
+            pending.push({ i, letter: isBlank ? pendingBlankLetter : raw, blank: isBlank, fromSlot: selectedRackSlot });
+            selectedRackSlot = null;
+            pendingBlankLetter = null;
+            render();
+            return;
+        }
+
+        if (action === 'clear-pending') { pending = []; render(); return; }
+
+        if (action === 'confirm-place') {
+            if (!pending.length) return;
+            skyper.send({ t: 'place', cells: pending.map(({ i, letter, blank }) => ({ i, letter, blank })) });
+            return;
+        }
+
+        if (action === 'pass') { skyper.send({ t: 'pass' }); return; }
+
+        if (action === 'start-exchange') { exchangeMode = true; exchangeSelection = []; render(); return; }
+        if (action === 'cancel-exchange') { exchangeMode = false; exchangeSelection = []; render(); return; }
+        if (action === 'confirm-exchange') {
+            const rack = game.racks[skyper.instance.viewerId];
+            const letters = exchangeSelection.map((slot) => rack[slot]);
+            exchangeMode = false; exchangeSelection = [];
+            skyper.send({ t: 'exchange', letters });
+            return;
+        }
+    });
+
+    let pendingBlankLetter = null;
+
+    render();
+})();
+</script>
+</body>
+</html>
